@@ -1,0 +1,12 @@
+--- !tapi-tbd
+tbd-version:     4
+targets:         [ arm64-ios, arm64e-ios ]
+install-name:    '/usr/lib/libSystem.B.dylib'
+current-version: 1319
+exports:
+  - targets:         [ arm64-ios, arm64e-ios ]
+    symbols:         [ ___sincos_stret, ___sincosf_stret, _bzero, _calloc, _close, _cos, _exp, _ldexp, _log, _lseek, _pow, _pread, _sin, _dlopen, _dlsym, _dyld_stub_binder, _free, _getenv,
+                       _malloc, _memcmp, _memcpy, _memmove, _memset, _mkdir, _open, _pthread_create,
+                       _pthread_detach, _qsort, _read, _rename, _snprintf, _strcmp, _strlen, _syslog, _time, _unlink,
+                       _usleep, _vsnprintf, _write ]
+...

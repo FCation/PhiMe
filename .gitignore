@@ -1,0 +1,19 @@
+# build output
+out/
+
+# signing key (never commit)
+*.keystore
+android/keystore.local.txt
+
+# fonts are not in the repo; see assets/fonts/README.md
+assets/fonts/*.ttf
+assets/fonts/*.otf
+assets/fonts/*.ttc
+assets/fonts/*LICENSE*
+
+# test data (third-party skin pack), logs, game packages
+tests/data/
+*.log
+*.apk
+*.ipa
+*.zip
