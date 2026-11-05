@@ -300,10 +300,12 @@ static JObj activity(J& j) {
     return j.exc() ? nullptr : a;
 }
 
+static bool g_noActivity = false;  // the last try failed only because the game's activity was not there yet
 static bool loadPicker(J& j) {
     JObj act = activity(j);
+    g_noActivity = !act;
     if (!act) {
-        LOG("picker: no Unity activity");
+        LOG("picker: no Unity activity yet (tried again later)");
         return false;
     }
     JObj ctx = j.findClass("android/content/Context");
@@ -349,6 +351,12 @@ static bool setup(J& j) {
     }
     g_ok = loadPicker(j);
     j.popFrame();
+    // too early (asked while the mod starts, before the game's activity exists): not a failure, try again next time
+    // (1.2.0-1.3.0 kept that first failure for good: no QR login, the game's own login came up and failed)
+    if (!g_ok && g_noActivity) {
+        g_tried = false;
+        return false;
+    }
     LOG("picker: Android document picker %s (dex %d bytes)", g_ok ? "ready" : "FAILED", (int)sizeof kPickerDex);
     return g_ok;
 }

@@ -2,8 +2,8 @@
 #include "unity.h"
 #include "perf.h"
 
-#define PM_VERSION "1.3.0"
-#define PM_VERSION_NUM 10300 // major * 10000 + minor * 100 + patch (PhiMe_Claim)
+#define PM_VERSION "1.3.1"
+#define PM_VERSION_NUM 10301 // major * 10000 + minor * 100 + patch (PhiMe_Claim)
 
 struct ModConfig {
     bool loaded = false;

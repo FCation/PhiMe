@@ -80,6 +80,10 @@ static bool g_tried = false, g_ok = false;
 
 static bool setup(J& j) {
     if (g_tried) return g_ok;
+    if (!jniActivity(j)) {  // too early (the mod is still starting): try again when asked next, don't give up
+        j.exc();
+        return false;
+    }
     g_tried = true;
     if (j.pushFrame(16) != 0) {
         j.exc();

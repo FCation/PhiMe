@@ -32,7 +32,9 @@ bool accountModLogin() {
 }
 #else
 const char* accountBundleId() { return kOfficialId; }
-bool accountModLogin() { return cloudAvailable(); }  // the re-signed APK: always
+// the re-signed APK: always (whether the Java side loads is checked when 登录 is tapped; 1.2.0-1.3.0 asked here,
+// at mod start, before the game's activity existed, and that early "no" turned the QR login off for the session)
+bool accountModLogin() { return true; }
 #endif
 
 typedef void (*VoidFn)(Obj*, const MethodInfo*);
@@ -123,8 +125,15 @@ bool accountLoginNow() {
 }
 
 static void hk_SFC_Login(Obj* self, const MethodInfo* m) {
-    if (loggedIn() || !accountModLogin() || !cloudAvailable()) {
+    if (loggedIn() || !accountModLogin()) {
         orig_SFC_Login(self, m);  // the game's own TapTap login
+        return;
+    }
+    if (!cloudAvailable()) {  // the game's own login would only fail its signature check: say why instead
+        LOG("account: 登录 tapped, but PhiMe's login could not load");
+        saveMessage(T("没能开始登录", "Could not start the login"),
+                    T("PhiMe 的扫码登录没能加载（需要 Android 8 以上）。游戏自带的登录在重签名的安装包上会报签名错误，所以没有改用它。\n\n请把 PhiMeMod-least.log 发给作者。",
+                      "PhiMe's QR login could not load (needs Android 8+). The game's own login fails the signature check on this re-signed APK, so it is not used.\n\nPlease send PhiMeMod-least.log to the author."));
         return;
     }
     LOG("account: 登录 -> PhiMe's TapTap QR login (bundle ID %s)", accountBundleId());
