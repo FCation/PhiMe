@@ -7,10 +7,18 @@ static uint32_t le32(const uint8_t* p) { return le16(p) | (uint32_t(le16(p + 2))
 static uint32_t be32(const uint8_t* p) {
     return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3];
 }
+static uint16_t be16(const uint8_t* p) { return uint16_t((uint16_t(p[0]) << 8) | p[1]); }
 static bool fits(uint32_t pos, uint32_t n, uint32_t end) { return pos <= end && n <= end - pos; }
 static bool fail(SkinResult* r, SkinError e, const char* detail) {
     if (r) { r->err = e; snprintf(r->detail, sizeof(r->detail), "%s", detail); }
     return false;
+}
+// Something was skipped or adjusted but the pack still loads: the notes are kept in detail ("; " separated).
+static void warn(SkinResult* r, const char* text) {
+    if (!r) return;
+    size_t n = strlen(r->detail);
+    if (n + 8 >= sizeof(r->detail)) return;
+    snprintf(r->detail + n, sizeof(r->detail) - n, "%s%s", n ? "; " : "", text);
 }
 static uint32_t crc32(const uint8_t* p, uint32_t n) {
     uint32_t table[256];
@@ -164,36 +172,42 @@ static bool nameEquals(const Entry& e, uint32_t start, const char* text) {
     for (uint32_t i = 0; i < n; ++i) if (pathChar(e.name[start + i]) != text[i]) return false;
     return true;
 }
-static bool packName(const Entry& e, uint32_t& base) {
+// A file of the pack: any folder depth (base = start of the file name, depth = folder count).
+// Rejects "..", Mac metadata (__MACOSX/ and "._" files) and directories.
+static bool packName(const Entry& e, uint32_t& base, int* depth = nullptr) {
     base = 0;
+    int d = 0;
     if (!e.nameSize || pathChar(e.name[0]) == '/' || pathChar(e.name[e.nameSize - 1]) == '/') return false;
+    uint32_t seg = 0;
     for (unsigned i = 0; i < e.nameSize; ++i) {
         char c = pathChar(e.name[i]);
         if (!c || (i && e.name[i - 1] == '.' && c == '.')) return false;
         if (c == '/') {
-            if (base) return false;
-            base = i + 1;
+            if (i - seg == 8) {
+                const char* mac = "__macosx";
+                unsigned k = 0;
+                while (k < 8 && pathChar(e.name[seg + k]) == mac[k]) ++k;
+                if (k == 8) return false;
+            }
+            base = seg = i + 1;
+            ++d;
         }
     }
-    if (base == 9) {
-        const char* mac = "__macosx/";
-        unsigned i = 0;
-        while (i < base && pathChar(e.name[i]) == mac[i]) ++i;
-        if (i == base) return false;
-    }
+    if (e.nameSize - base >= 2 && e.name[base] == '.' && e.name[base + 1] == '_') return false;
+    if (depth) *depth = d;
     return true;
 }
 static bool extraCheck(const uint8_t* p, uint32_t n, SkinResult* r) {
+    // ZIP64 extra fields (id 1) are fine while the 32-bit sizes are real (not 0xFFFFFFFF, checked by the callers)
     while (n) {
         if (n < 4 || le16(p + 2) > n - 4) return fail(r, SKE_ZIP_CORRUPT, "ZIP extra field truncated");
-        if (le16(p) == 1) return fail(r, SKE_ZIP_UNSUPPORTED, "ZIP64 extra field");
         uint32_t len = 4u + le16(p + 2);
         p += len;
         n -= len;
     }
     return true;
 }
-static bool directory(const uint8_t* z, uint32_t size, Entry* entries, int& count,
+static bool directory(const uint8_t* z, uint32_t size, Entry*& entries, int& count,
                       uint32_t& cd, SkinResult* r) {
     if (!z || size < 4) return fail(r, SKE_NOT_ZIP, "ZIP signature missing");
     uint32_t end = size >= 22 ? size - 22 : 0;
@@ -218,8 +232,10 @@ static bool directory(const uint8_t* z, uint32_t size, Entry* entries, int& coun
         return fail(r, SKE_ZIP_UNSUPPORTED, "ZIP64 directory");
     if (le16(e + 4) || le16(e + 6) || le16(e + 8) != count)
         return fail(r, SKE_ZIP_UNSUPPORTED, "Multi-disk ZIP");
-    if (count > 512) return fail(r, SKE_TOO_BIG, "ZIP has more than 512 entries");
+    if (count > 4096) return fail(r, SKE_TOO_BIG, "ZIP has more than 4096 entries");
     if (!fits(cd, len, end) || cd + len != end) return fail(r, SKE_ZIP_CORRUPT, "ZIP directory bounds");
+    entries = static_cast<Entry*>(malloc(sizeof(Entry) * size_t(count ? count : 1)));
+    if (!entries) return fail(r, SKE_NO_MEMORY, "ZIP directory");
     uint32_t pos = cd;
     for (int i = 0; i < count; ++i) {
         if (!fits(pos, 46, end) || le32(z + pos) != 0x02014b50) return fail(r, SKE_ZIP_CORRUPT, "ZIP central header");
@@ -256,8 +272,10 @@ static bool extract(const uint8_t* z, uint32_t cd, const Entry& a, SkinBlob& out
     if (flags & 8) {
         uint32_t dp = pos + a.packed;
         if (fits(dp, 4, cd) && le32(z + dp) == 0x08074b50) dp += 4;
-        if (!fits(dp, 12, cd) || le32(z + dp) != a.crc || le32(z + dp + 4) != a.packed || le32(z + dp + 8) != a.size)
-            return fail(r, SKE_ZIP_CORRUPT, name);
+        bool small = fits(dp, 12, cd) && le32(z + dp) == a.crc && le32(z + dp + 4) == a.packed && le32(z + dp + 8) == a.size;
+        bool big = fits(dp, 20, cd) && le32(z + dp) == a.crc && le32(z + dp + 4) == a.packed && !le32(z + dp + 8) &&
+                   le32(z + dp + 12) == a.size && !le32(z + dp + 16);  // ZIP64 descriptor: 8-byte sizes
+        if (!small && !big) return fail(r, SKE_ZIP_CORRUPT, name);
     }
     out.data = static_cast<uint8_t*>(malloc(a.size ? a.size : 1));
     if (!out.data) return fail(r, SKE_NO_MEMORY, name);
@@ -308,9 +326,17 @@ static bool equalCI(const char* a, const char* b) {
     return *a == *b;
 }
 static bool boolean(const char* s, bool& v) {
-    if (equalCI(s, "true") || equalCI(s, "yes")) { v = true; return true; }
-    if (equalCI(s, "false") || equalCI(s, "no")) { v = false; return true; }
+    if (equalCI(s, "true") || equalCI(s, "yes") || equalCI(s, "on") || !strcmp(s, "1")) { v = true; return true; }
+    if (equalCI(s, "false") || equalCI(s, "no") || equalCI(s, "off") || !strcmp(s, "0")) { v = false; return true; }
     return false;
+}
+// "hitFx", "HitFx", "hit_fx" and "hit-fx" are the same key
+static bool keyIs(const char* key, const char* want) {
+    for (;;) {
+        while (*key == '_' || *key == '-') ++key;
+        if (!*key || !*want) return !*key && !*want;
+        if (lower(*key++) != lower(*want++)) return false;
+    }
 }
 static bool integer(const char* s, uint32_t& v) {
     v = 0;
@@ -358,6 +384,26 @@ static bool number(const char* s, double& value) {
     while (exponent < 0) { mantissa *= 0.1; ++exponent; }
     value = neg ? -mantissa : mantissa;
     return value <= 1.7976931348623157e308 && value >= -1.7976931348623157e308;
+}
+// A whole count: 50, 0x32 or 50.0
+static bool whole(const char* s, uint32_t& v) {
+    if (integer(s, v)) return true;
+    double d;
+    if (!number(s, d) || d < 0 || d > 1e6 || double(uint32_t(d)) != d) return false;
+    v = uint32_t(d);
+    return true;
+}
+// 0xAARRGGBB / decimal as Phira writes it; also "#RRGGBB" (opaque) and "#AARRGGBB"
+static bool color(const char* s, uint32_t& v) {
+    if (integer(s, v)) return true;
+    if (s[0] == '-' && integer(s + 1, v) && v && v <= 0x80000000u) { v = 0u - v; return true; }  // signed ARGB
+    if (*s != '#') return false;
+    uint32_t n = uint32_t(strlen(s + 1));
+    if (n != 6 && n != 8) return false;
+    v = 0;
+    for (uint32_t i = 1; i <= n; ++i) { int d = hex(s[i]); if (d < 0) return false; v = (v << 4) | unsigned(d); }
+    if (n == 6) v |= 0xff000000u;
+    return true;
 }
 
 struct Scalar { char* text; bool quoted; };
@@ -488,54 +534,55 @@ static bool parseInfo(const SkinBlob& info, SkinPack& pack, SkinResult* r) {
                 n = 1;
             }
             if (y.p != y.end && *y.p != '#') break;
+            // Values are read loosely (quoted numbers, 50.0, #RRGGBB); a bad one is skipped and the default kept
             error = SKE_INFO_VALUE; why = "wrong type or out of range";
             char* text = scalars[0].text;
             uint32_t a = 0, b = 0;
             bool boolValue = false;
             double num = 0;
-            if (!strcmp(key, "name") || !strcmp(key, "author") || !strcmp(key, "description")) {
-                if (list || (!scalars[0].quoted && (boolean(text, boolValue) || number(text, num) || integer(text, a)))) break;
-                if (!strcmp(key, "name")) copyText(pack.name, sizeof(pack.name), text);
-                else if (!strcmp(key, "author")) copyText(pack.author, sizeof(pack.author), text);
+            if (keyIs(key, "name") || keyIs(key, "author") || keyIs(key, "description")) {
+                if (list) break;
+                if (keyIs(key, "name")) copyText(pack.name, sizeof(pack.name), text);
+                else if (keyIs(key, "author")) copyText(pack.author, sizeof(pack.author), text);
                 else copyText(pack.description, sizeof(pack.description), text);
-            } else if (!strcmp(key, "hitFx") || !strcmp(key, "holdAtlas") || !strcmp(key, "holdAtlasMH")) {
-                if (!list || n != 2 || scalars[0].quoted || scalars[1].quoted ||
-                    !integer(text, a) || !integer(scalars[1].text, b)) break;
-                if (!strcmp(key, "hitFx")) {
+            } else if (keyIs(key, "hitFx") || keyIs(key, "holdAtlas") || keyIs(key, "holdAtlasMH")) {
+                if (!list || n != 2 || !whole(text, a) || !whole(scalars[1].text, b)) break;
+                if (keyIs(key, "hitFx")) {
                     if (!a || !b || a > 64 || b > 64) break;
                     pack.hitFxCols = int(a); pack.hitFxRows = int(b);
                 } else {
                     if (a > 4096 || b > 4096) break;
-                    if (!strcmp(key, "holdAtlasMH")) { pack.holdTopMH = int(a); pack.holdBottomMH = int(b); mh = true; }
+                    if (keyIs(key, "holdAtlasMH")) { pack.holdTopMH = int(a); pack.holdBottomMH = int(b); mh = true; }
                     else { pack.holdTop = int(a); pack.holdBottom = int(b); }
                 }
-            } else if (!strcmp(key, "hitFxDuration") || !strcmp(key, "hitFxScale")) {
-                if (list || scalars[0].quoted || !number(text, num) || !(num > 0 && num <= 10) || float(num) == 0) break;
-                if (!strcmp(key, "hitFxDuration")) pack.hitFxDuration = float(num);
+            } else if (keyIs(key, "hitFxDuration") || keyIs(key, "hitFxScale")) {
+                if (list || !number(text, num) || !(num > 0 && num <= 10) || float(num) == 0) break;
+                if (keyIs(key, "hitFxDuration")) pack.hitFxDuration = float(num);
                 else pack.hitFxScale = float(num);
-            } else if (!strcmp(key, "colorPerfect") || !strcmp(key, "colorGood")) {
-                if (list || scalars[0].quoted || !integer(text, a)) break;
-                if (!strcmp(key, "colorPerfect")) pack.colorPerfect = a;
+            } else if (keyIs(key, "colorPerfect") || keyIs(key, "colorGood")) {
+                if (list || !color(text, a)) break;
+                if (keyIs(key, "colorPerfect")) pack.colorPerfect = a;
                 else pack.colorGood = a;
             } else {
                 bool* target = nullptr;
-                if (!strcmp(key, "hitFxRotate")) target = &pack.hitFxRotate;
-                else if (!strcmp(key, "hitFxTinted")) target = &pack.hitFxTinted;
-                else if (!strcmp(key, "hideParticles")) target = &pack.hideParticles;
-                else if (!strcmp(key, "holdKeepHead")) target = &pack.holdKeepHead;
-                else if (!strcmp(key, "holdRepeat")) target = &pack.holdRepeat;
-                else if (!strcmp(key, "holdCompact")) target = &pack.holdCompact;
+                if (keyIs(key, "hitFxRotate")) target = &pack.hitFxRotate;
+                else if (keyIs(key, "hitFxTinted")) target = &pack.hitFxTinted;
+                else if (keyIs(key, "hideParticles")) target = &pack.hideParticles;
+                else if (keyIs(key, "holdKeepHead")) target = &pack.holdKeepHead;
+                else if (keyIs(key, "holdRepeat")) target = &pack.holdRepeat;
+                else if (keyIs(key, "holdCompact")) target = &pack.holdCompact;
                 if (target) {
-                    if (list || scalars[0].quoted || !boolean(text, boolValue)) break;
+                    if (list || !boolean(text, boolValue)) break;
                     *target = boolValue;
                 }
             }
             error = SKE_OK;
         } while (false);
         if (error != SKE_OK) {
-            char detail[256];
-            snprintf(detail, sizeof(detail), "info.yml line %u key %s: %s", line, key, why);
-            ok = fail(r, error, detail);
+            // Phira itself would refuse the pack; we skip the line so the pack still loads, and say so in the log
+            char detail[160];
+            snprintf(detail, sizeof(detail), "info.yml line %u key %s skipped: %s", line, key, why);
+            warn(r, detail);
         }
     }
     if (!mh) { pack.holdTopMH = pack.holdTop; pack.holdBottomMH = pack.holdBottom; }
@@ -547,23 +594,71 @@ static const char* const names[SK_FILE_COUNT + 1] = {
     "click.png", "click_mh.png", "drag.png", "drag_mh.png", "flick.png", "flick_mh.png",
     "hold.png", "hold_mh.png", "hit_fx.png", "click.ogg", "drag.ogg", "flick.ogg", "info.yml"
 };
+// Image size from the content: PNG, or JPEG (Unity's LoadImage reads both, whatever the file is called)
+static bool imageSize(const uint8_t* d, uint32_t n, uint32_t& w, uint32_t& h) {
+    static const uint8_t sig[8] = {137,80,78,71,13,10,26,10};
+    if (n >= 33 && !memcmp(d, sig, 8) && be32(d + 8) == 13 && !memcmp(d + 12, "IHDR", 4)) {
+        w = be32(d + 16); h = be32(d + 20);
+        return true;
+    }
+    if (n < 4 || d[0] != 0xff || d[1] != 0xd8) return false;
+    for (uint32_t i = 2; i + 4 <= n;) {
+        if (d[i] != 0xff) return false;
+        uint8_t m = d[i + 1];
+        if (m == 0xff) { ++i; continue; }
+        if (m == 0x01 || (m >= 0xd0 && m <= 0xd8)) { i += 2; continue; }
+        if (m == 0xd9 || m == 0xda) return false;
+        uint32_t len = be16(d + i + 2);
+        if (len < 2 || !fits(i + 2, len, n)) return false;
+        if (m >= 0xc0 && m <= 0xcf && m != 0xc4 && m != 0xc8 && m != 0xcc) {  // start of frame
+            if (len < 7) return false;
+            h = be16(d + i + 5); w = be16(d + i + 7);
+            return true;
+        }
+        i += 2 + len;
+    }
+    return false;
+}
+// Sound kind from the content, whatever the file is called: 1 Ogg, 2 WAV, 3 MP3, 4 FLAC (all decoded by
+// audiodec), 0 unknown
+static int soundKind(const SkinBlob& b) {
+    if (b.size >= 4 && !memcmp(b.data, "OggS", 4)) return 1;
+    if (b.size >= 12 && !memcmp(b.data, "RIFF", 4) && !memcmp(b.data + 8, "WAVE", 4)) return 2;
+    if (b.size >= 4 && !memcmp(b.data, "fLaC", 4)) return 4;
+    if (b.size >= 3 && !memcmp(b.data, "ID3", 3)) {  // a tag, then FLAC or MP3
+        if (b.size < 10) return 3;
+        uint32_t s = 10 + ((uint32_t(b.data[6] & 127) << 21) | (uint32_t(b.data[7] & 127) << 14) |
+                           (uint32_t(b.data[8] & 127) << 7) | (b.data[9] & 127));
+        return s + 4 <= b.size && !memcmp(b.data + s, "fLaC", 4) ? 4 : 3;
+    }
+    if (b.size >= 2 && b.data[0] == 255 && (b.data[1] & 224) == 224) return 3;
+    return 0;
+}
+struct FreeLater { void* p; ~FreeLater() { free(p); } };
+
 static bool load(const uint8_t* z, uint32_t size, SkinPack& p, SkinResult* r) {
     if (size > 64u * 1024 * 1024) return fail(r, SKE_TOO_BIG, "ZIP input exceeds 64 MiB");
-    Entry entries[512];
+    Entry* entries = nullptr;
     int count = 0; uint32_t cd = 0;
-    if (!directory(z, size, entries, count, cd, r)) return false;
-    int chosen[SK_FILE_COUNT + 1], priority[3] = {3,3,3};
+    bool dirOk = directory(z, size, entries, count, cd, r);
+    FreeLater keep = {entries};
+    if (!dirOk) return false;
+    // sounds: up to one candidate per extension (ogg, wav, flac, mp3), picked later by what the bytes really are
+    int chosen[SK_FILE_COUNT + 1], sound[3][4];
     for (int& c : chosen) c = -1;
+    for (auto& s : sound) for (int& c : s) c = -1;
+    // info.yml: the shallowest one wins (a pack zipped inside one or more folders still works)
     uint32_t prefixLen = 0;
+    int bestDepth = 1 << 30;
     for (int i = 0; i < count; ++i) {
-        uint32_t base;
-        if (packName(entries[i], base) && nameEquals(entries[i], base, "info.yml")) {
+        uint32_t base; int depth;
+        if (packName(entries[i], base, &depth) && nameEquals(entries[i], base, "info.yml") && depth < bestDepth) {
             chosen[SK_FILE_COUNT] = i;
             prefixLen = base;
-            break;
+            bestDepth = depth;
         }
     }
-    if (chosen[SK_FILE_COUNT] < 0) return fail(r, SKE_NO_INFO, "info.yml missing at root or in one folder");
+    if (chosen[SK_FILE_COUNT] < 0) return fail(r, SKE_NO_INFO, "info.yml missing");
     for (int i = 0; i < count; ++i) {
         uint32_t base;
         if (!packName(entries[i], base) || base != prefixLen) continue;
@@ -574,17 +669,20 @@ static bool load(const uint8_t* z, uint32_t size, SkinPack& p, SkinResult* r) {
         for (int j = 0; j < SK_SND_CLICK; ++j) if (chosen[j] < 0 && nameEquals(entries[i], base, names[j])) chosen[j] = i;
         for (int s = 0; s < 3; ++s) {
             static const char* const stems[3] = {"click", "drag", "flick"};
-            static const char* const extensions[3] = {"ogg", "wav", "mp3"};
-            for (int ext = 0; ext < priority[s]; ++ext) {
-                char sound[32]; snprintf(sound, sizeof(sound), "%s.%s", stems[s], extensions[ext]);
-                if (nameEquals(entries[i], base, sound)) { chosen[SK_SND_CLICK + s] = i; priority[s] = ext; break; }
+            static const char* const extensions[4] = {"ogg", "wav", "flac", "mp3"};
+            for (int ext = 0; ext < 4; ++ext) {
+                char file[32]; snprintf(file, sizeof(file), "%s.%s", stems[s], extensions[ext]);
+                if (sound[s][ext] < 0 && nameEquals(entries[i], base, file)) sound[s][ext] = i;
             }
         }
     }
     uint32_t total = 0;
-    for (int i = 0; i <= SK_FILE_COUNT; ++i) if (chosen[i] >= 0) {
-        uint32_t n = entries[chosen[i]].size;
-        if (n > 32u * 1024 * 1024 || n > 96u * 1024 * 1024 - total) return fail(r, SKE_TOO_BIG, names[i]);
+    for (int i = 0; i <= SK_FILE_COUNT + 12; ++i) {
+        int e = i <= SK_FILE_COUNT ? chosen[i] : sound[(i - SK_FILE_COUNT - 1) / 4][(i - SK_FILE_COUNT - 1) % 4];
+        if (e < 0) continue;
+        uint32_t n = entries[e].size;
+        if (n > 32u * 1024 * 1024 || n > 96u * 1024 * 1024 - total)
+            return fail(r, SKE_TOO_BIG, i <= SK_FILE_COUNT ? names[i] : "sound");
         total += n;
     }
     for (int i = 0; i < SK_SND_CLICK; ++i) if ((i == SK_CLICK || i == SK_DRAG || i == SK_FLICK || i == SK_HOLD || i == SK_HIT_FX) && chosen[i] < 0)
@@ -596,29 +694,50 @@ static bool load(const uint8_t* z, uint32_t size, SkinPack& p, SkinResult* r) {
     if (ok) ok = parseInfo(info, p, r);
     free(info.data);
     if (!ok) return false;
-    for (int i = 0; i < SK_FILE_COUNT; ++i) if (chosen[i] >= 0) {
-        char name[32];
-        const Entry& e = entries[chosen[i]];
-        uint32_t n = e.nameSize - prefixLen;
-        memcpy(name, e.name + prefixLen, n); name[n] = 0;
+    char note[96];
+    for (int i = 0; i < SK_SND_CLICK; ++i) if (chosen[i] >= 0) {
+        const char* name = names[i];
         if (!extract(z, cd, entries[chosen[i]], p.files[i], name, r)) return false;
         SkinBlob& b = p.files[i];
-        if (i < SK_SND_CLICK) {
-            static const uint8_t sig[8] = {137,80,78,71,13,10,26,10};
-            if (b.size < 33 || memcmp(b.data, sig, 8) || be32(b.data + 8) != 13 || memcmp(b.data + 12, "IHDR", 4))
-                return fail(r, SKE_BAD_IMAGE, name);
-            uint32_t w = be32(b.data + 16), h = be32(b.data + 20);
-            if (!w || !h || w > 4096 || h > 4096) return fail(r, SKE_BAD_IMAGE, name);
-            b.w = int(w); b.h = int(h);
-            if ((i == SK_HOLD && p.holdTop + p.holdBottom >= b.h) ||
-                (i == SK_HOLD_MH && p.holdTopMH + p.holdBottomMH >= b.h) ||
-                (i == SK_HIT_FX && (b.w < p.hitFxCols || b.h < p.hitFxRows))) return fail(r, SKE_BAD_IMAGE, name);
-        } else {
-            int ext = priority[i - SK_SND_CLICK];
-            bool valid = ext == 0 ? b.size >= 4 && !memcmp(b.data, "OggS", 4) :
-                ext == 1 ? b.size >= 12 && !memcmp(b.data, "RIFF", 4) && !memcmp(b.data + 8, "WAVE", 4) :
-                (b.size >= 3 && !memcmp(b.data, "ID3", 3)) || (b.size >= 2 && b.data[0] == 255 && (b.data[1] & 224) == 224);
-            if (!valid) return fail(r, SKE_BAD_SOUND, name);
+        uint32_t w = 0, h = 0;
+        bool good = imageSize(b.data, b.size, w, h) && w && h && w <= 4096 && h <= 4096;
+        bool optional = i == SK_CLICK_MH || i == SK_DRAG_MH || i == SK_FLICK_MH || i == SK_HOLD_MH;
+        if (!good && !optional) return fail(r, SKE_BAD_IMAGE, name);
+        if (!good) {  // a broken multi-hit image: fall back to the plain one
+            free(b.data); b = SkinBlob{};
+            snprintf(note, sizeof note, "%s skipped: not a PNG/JPEG up to 4096 px", name); warn(r, note);
+            continue;
+        }
+        b.w = int(w); b.h = int(h);
+        // atlas cuts that do not fit: shrink them in proportion (Phira would refuse the pack)
+        int* top = i == SK_HOLD ? &p.holdTop : i == SK_HOLD_MH ? &p.holdTopMH : nullptr;
+        int* bot = i == SK_HOLD ? &p.holdBottom : i == SK_HOLD_MH ? &p.holdBottomMH : nullptr;
+        if (top && *top + *bot >= b.h) {
+            int sum = *top + *bot, room = b.h - 1;
+            *top = int((long long)*top * room / sum); *bot = int((long long)*bot * room / sum);
+            snprintf(note, sizeof note, "%s atlas cut shrunk to [%d, %d]", name, *top, *bot); warn(r, note);
+        }
+        if (i == SK_HIT_FX && (b.w < p.hitFxCols || b.h < p.hitFxRows)) {
+            if (b.w < p.hitFxCols) p.hitFxCols = b.w;
+            if (b.h < p.hitFxRows) p.hitFxRows = b.h;
+            warn(r, "hitFx grid shrunk to the image size");
+        }
+    }
+    // sounds: the first candidate (ogg, wav, flac, mp3 order) whose bytes are a known format; none = the game's sound
+    for (int s = 0; s < 3; ++s) {
+        SkinBlob& b = p.files[SK_SND_CLICK + s];
+        for (int ext = 0; ext < 4 && !b.data; ++ext) {
+            int e = sound[s][ext];
+            if (e < 0) continue;
+            char name[32];
+            uint32_t n = entries[e].nameSize - prefixLen;
+            if (n >= sizeof name) n = sizeof name - 1;
+            memcpy(name, entries[e].name + prefixLen, n); name[n] = 0;
+            if (!extract(z, cd, entries[e], b, name, r)) return false;
+            if (soundKind(b)) break;
+            free(b.data); b = SkinBlob{};
+            snprintf(note, sizeof note, "%s skipped: not Ogg, WAV, FLAC or MP3", name);
+            warn(r, note);
         }
     }
     return true;

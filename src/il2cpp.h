@@ -69,6 +69,8 @@ inline void** arrayData(Il2CppArray* a) { return (void**)((char*)a + sizeof(Il2C
 typedef void (*NativeCallback)(void* user);
 Il2CppObject* makeDelegate(Il2CppClass* delegateClass, NativeCallback cb, void* user);
 Il2CppObject* makeUnityAction(NativeCallback cb, void* user);
+// a void delegate with 3 parameters calling fn(target, a, b, c, const MethodInfo*) directly
+Il2CppObject* makeDelegate3(Il2CppClass* delegateClass, void* fn);
 
 // Redirect an engine internal call (icall). IL2CPP caches the resolved native function in a writable slot
 // that the managed wrapper loads with `adrp; [add;] ldr`. We decode that from the wrapper's code, so this is

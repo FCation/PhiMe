@@ -43,8 +43,11 @@ static Handle g_tex[SK_FILE_COUNT];
 static Handle g_frames[256];
 static int g_frameN = 0;
 // the note sprite map (game sprite -> skin sprite) and the skin's pixels per unit per note kind (from its plain note)
+// rf / rt: the same objects as raw pointers, for the lookups done for every note (the handles keep them alive and
+// IL2CPP's GC does not move objects; resolving a GC handle each time was most of a scan's cost)
 struct MapE {
     Handle from, to;
+    Obj *rf, *rt;
 };
 static MapE g_map[24];
 static int g_mapN = 0;
@@ -55,6 +58,7 @@ struct StandIn {
     bool mh;
     float w, h, ppu, px, py;
     Handle s;
+    Obj* raw;  // the same as s, for isStandIn
 };
 static StandIn g_si[32];
 static int g_siN = 0;
@@ -245,6 +249,7 @@ static Obj* makeTexture(const SkinBlob& b) {
 static bool loadPack(const uint8_t* zip, uint32_t n, SkinResult* res) {
     SkinPack p;
     if (!skinPackLoad(zip, n, &p, res)) return false;
+    if (res->detail[0]) LOG("skin: pack loaded with notes: %s", res->detail);  // lines skipped, cuts adjusted
     Obj* tex[SK_FILE_COUNT] = {};
     bool ok = true;
     for (int i = 0; i < SK_SND_CLICK && ok; i++) {
@@ -321,15 +326,16 @@ static void ensureLoaded() {
 enum { R_CLICK, R_DRAG, R_FLICK, R_HEAD, R_BODY, R_END };
 static Obj* mapped(Obj* s) {
     for (int i = 0; i < g_mapN; i++) {
-        if (g_map[i].from.get() == s) return (Obj*)g_map[i].to.get();
-        if (g_map[i].to.get() == s) return nullptr;  // already ours
+        if (g_map[i].rf == s) return g_map[i].rt;
+        if (g_map[i].rt == s) return nullptr;  // already ours
     }
     return nullptr;
 }
+static bool isStandIn(Obj* s);
 static bool known(Obj* s) {
     for (int i = 0; i < g_mapN; i++)
-        if (g_map[i].from.get() == s || g_map[i].to.get() == s) return true;
-    return false;
+        if (g_map[i].rf == s || g_map[i].rt == s) return true;
+    return isStandIn(s);  // ours but not in the map (the multi-hit hold tail)
 }
 
 // The hold atlas' middle part resampled to `rows` rows (box filter: every source row counts), as its own texture
@@ -380,6 +386,11 @@ static bool g_deferred = false;
 // Stand-ins made so far, by what they depend on: the game loads its note sprites again for every song (new objects,
 // same look), so a new level reuses these instead of making more
 static Obj* makeStandIn(Obj* orig, int role, bool mh);
+static bool isStandIn(Obj* s) {
+    for (int i = 0; i < g_siN; i++)
+        if (s && g_si[i].raw == s) return true;
+    return false;
+}
 static Obj* standIn(Obj* orig, int role, bool mh) {
     if (!alive(orig)) return nullptr;
     Rect o = callm<Rect>(S.spRect, orig);
@@ -392,7 +403,7 @@ static Obj* standIn(Obj* orig, int role, bool mh) {
             return (Obj*)c.s.get();
     }
     Obj* s = makeStandIn(orig, role, mh);
-    if (s && g_siN < 32) g_si[g_siN++] = StandIn{role, mh, o.w, o.h, ppu, pv.x, pv.y, {}}, g_si[g_siN - 1].s.set(s);
+    if (s && g_siN < 32) g_si[g_siN++] = StandIn{role, mh, o.w, o.h, ppu, pv.x, pv.y, {}, s}, g_si[g_siN - 1].s.set(s);
     return s;
 }
 static Obj* makeStandIn(Obj* orig, int role, bool mh) {
@@ -450,7 +461,15 @@ static Obj* makeStandIn(Obj* orig, int role, bool mh) {
     Vec2 pivot{pv.x / o.w, pv.y / o.h};
     return keep(callm<Obj*>(S.spriteCreate, tex, r, pivot, nppu, 0u, 0, Vec4{0, 0, 0, 0}));
 }
+// The game's plain hold tail of this level. The game has no multi-hit tail: CreateNote swaps only noteImages[0] and
+// [1] (head, body) for a multi-hit hold and keeps the shared tail [2]. Skins draw hold_mh.png's tail there too.
+static Handle g_endOrig;
 static void learn(Obj* orig, int role, bool mh) {
+    if (role == R_END && !mh && orig && !isStandIn(orig) && !mapped(orig) && !g_endOrig.h) {
+        bool ours = false;
+        for (int i = 0; i < g_mapN; i++) ours = ours || g_map[i].rt == orig;
+        if (!ours) g_endOrig.set(orig);
+    }
     if (!orig || known(orig) || g_mapN >= 24) return;
     g_deferred = false;
     Obj* s = standIn(orig, role, mh);
@@ -466,6 +485,8 @@ static void learn(Obj* orig, int role, bool mh) {
     }
     g_map[g_mapN].from.set(orig);
     g_map[g_mapN].to.set(s);
+    g_map[g_mapN].rf = orig;
+    g_map[g_mapN].rt = s;
     g_mapN++;
     char n[64] = "?";
     objName(orig, n, sizeof n);
@@ -475,9 +496,10 @@ static void learn(Obj* orig, int role, bool mh) {
 
 // the game's multi-hit sprites of this level (read from the judge lines before they get ours)
 static Handle g_hl[5];
+static Obj* g_hlRaw[5];  // the same, raw (see MapE)
 static bool isHL(Obj* s) {
-    for (Handle& h : g_hl)
-        if (h.h && h.get() == s) return true;
+    for (Obj* h : g_hlRaw)
+        if (h && h == s) return true;
     return false;
 }
 
@@ -540,7 +562,22 @@ static void fixSlot(Obj** slot, int kind) {  // kind: 0 tap, 1 drag, 2 flick, 3 
     Obj* to = mapped(s);
     if (to) *slot = to;
 }
-static void fixFields(Obj* note, int kind) {
+// a multi-hit hold head / body: the game's HoldHL0 / HoldHL1 or our stand-in for them
+static bool mhHoldSprite(Obj* s) {
+    if (!s) return false;
+    for (int k = 3; k < 5; k++) {
+        Obj* o = g_hl[k].h ? (Obj*)g_hl[k].get() : nullptr;
+        if (o && (o == s || mapped(o) == s)) return true;
+    }
+    return false;
+}
+// The tail for a hold: hold_mh.png's when it is a multi-hit hold (null = keep what it has)
+static Obj* holdTail(bool mh) {
+    Obj* end = g_endOrig.h ? (Obj*)g_endOrig.get() : nullptr;
+    if (!alive(end) || !alive((Obj*)g_tex[SK_HOLD_MH].get())) return nullptr;
+    return mh ? standIn(end, R_END, true) : mapped(end);
+}
+static void fixFields(Obj* note, int kind, bool* mhHold = nullptr) {
     const SpriteFields* f = spriteFields(il2cpp_object_get_class(note));
     for (int i = 0; f && i < f->n; i++) {
         if (!f->arr[i]) {
@@ -548,7 +585,14 @@ static void fixFields(Obj* note, int kind) {
             continue;
         }
         Il2CppArray* a = fld<Il2CppArray*>(note, f->off[i]);
-        for (uintptr_t j = 0; a && j < a->max_length && j < 16; j++) fixSlot(&((Obj**)arrayData(a))[j], kind);
+        Obj** s = a ? (Obj**)arrayData(a) : nullptr;
+        bool mh = kind == 3 && a && a->max_length >= 3 && (mhHoldSprite(s[0]) || mhHoldSprite(s[1]));
+        for (uintptr_t j = 0; a && j < a->max_length && j < 16; j++) fixSlot(&s[j], kind);
+        if (kind == 3 && a && a->max_length >= 3) {  // noteImages: head, body, tail
+            Obj* t = holdTail(mh);
+            if (t) s[2] = t;
+            if (mhHold) *mhHold = mh;
+        }
     }
 }
 
@@ -563,6 +607,10 @@ static void swapRenderer(Obj* sr, int role) {
 
 static int g_lastCount = -1, g_diag = 0;  // g_diag: note diagnostics logged this level
 static float g_nextScan = 0;
+// full scans in a row that changed nothing: once the level has settled, the safety rescan slows down (1.2.0 and
+// older rescanned every note whenever the note count changed, i.e. on nearly every frame of a dense part, since
+// judged notes leave the lists)
+static int g_stableScans = 0;
 static Handle g_pc;
 static void scanNotes(bool force) {
     Obj* pc = (Obj*)g_pc.get();
@@ -575,8 +623,12 @@ static void scanNotes(bool force) {
         n[i] = listView(fld<Obj*>(num, S.numLists[i]), &e[i]);
         total += n[i];
     }
-    if (!force && total == g_lastCount) return;
+    // only new notes need the skin (the level's first frames, a practice reseed); judged ones just leave
+    bool grew = total > g_lastCount;
     g_lastCount = total;
+    if (!force && !grew) return;
+    PerfScope ps(PF_SKIN_SCAN);
+    int mapBefore = g_mapN;
     // the game's multi-hit sprites (judge line fields), remembered before the lines get ours
     Obj** lines = nullptr;
     int nl = listView(fld<Obj*>(jc, S.jcLines), &lines);
@@ -586,7 +638,7 @@ static void scanNotes(bool force) {
             Obj* o = S.jlHL[k] >= 0 ? fld<Obj*>(lines[0], S.jlHL[k]) : nullptr;
             if (!g_hl[k].h && o && !strcmp(il2cpp_class_get_name(il2cpp_object_get_class(o)), "Sprite") && !mapped(o) &&
                 !known(o))
-                g_hl[k].set(o);
+                g_hl[k].set(o), g_hlRaw[k] = o;
         }
     // plain notes first (they set each kind's scale), then the multi-hit sprites, then once more for those
     for (int pass = 0; pass < 2; pass++) {
@@ -653,7 +705,13 @@ static void scanNotes(bool force) {
         swapRenderer(part[0], R_HEAD);
         swapRenderer(part[1], R_BODY);
         swapRenderer(part[2], R_END);
-        fixFields(h, 3);
+        bool mh = false;
+        fixFields(h, 3, &mh);
+        Obj* tail = holdTail(mh);  // a hold already on screen: its tail renderer too
+        if (tail && alive(part[2]) && callm<Obj*>(S.srGetSprite, part[2]) && callm<Obj*>(S.srGetSprite, part[2]) != tail)
+            callm<void>(S.srSetSprite, part[2], tail);
+        static int mhLogged = 0;
+        if (mh && tail && mhLogged++ < 1) LOG("skin: multi-hit hold gets hold_mh.png's tail");
     }
     for (int k = 0; k < 5; k++)
         if (g_hl[k].h) learn((Obj*)g_hl[k].get(), hlRoles[k], true);
@@ -671,9 +729,12 @@ static void scanNotes(bool force) {
     }
     static int logged = 0;
     if (logged++ < 3) LOG("skin: %d notes skinned (%d sprite pairs)", total, g_mapN);
+    g_stableScans = g_mapN == mapBefore && !g_deferred ? g_stableScans + 1 : 0;
 }
 void skinRefreshNotes() {
-    if (skinActive()) scanNotes(true);
+    if (!skinActive()) return;
+    g_stableScans = 0;  // new note objects: watch closely again for a moment
+    scanNotes(true);
 }
 
 // ---- hit effects ----
@@ -684,9 +745,12 @@ struct Fx {
     Color c;
     bool good;
     Vec3 scale;     // its local scale for our frame size (the game's animation is overridden every frame)
+    Handle rs;      // its renderers, looked up again only on a few early frames (the sparks appear after the clone)
+    int frames;     // frames it has been on screen
 };
 static Fx g_fx[96];
 static int g_fxNext = 0;
+static int g_fxLive = 0;  // effects on screen at the last tick (0: fxTick has nothing to do)
 static int g_inLevelFrames = 0;  // frames since the level started (clone logging only during play)
 static Handle g_setting;          // the settings scene (its delay preview gets the skin too)
 
@@ -779,6 +843,9 @@ void skinOnClone(Obj* src, Obj* clone) {
     f.c = c;
     f.good = good;
     f.scale = Vec3{k, k, ls0.z};
+    f.rs.clear();
+    f.frames = 0;
+    g_fxLive++;
     callm<void>(S.srSetSprite, main, (Obj*)g_frames[0].get());
     callm<void>(S.srSetColor, main, c);
     if (S.trSetLocal) callm<void>(S.trSetLocal, goTransform(gameObject(main)), f.scale);
@@ -812,34 +879,51 @@ bool skinLineColors(Color out[2]) {
 }
 
 static void fxTick() {
+    if (!g_fxLive) return;
+    PerfScope ps(PF_SKIN_FX);
     float now = timeSinceLevelLoad(), dur = g_info.hitFxDuration > 0 ? g_info.hitFxDuration : 0.5f;
+    int live = 0;
     for (Fx& f : g_fx) {
         if (!f.sr.h) continue;
         Obj* sr = (Obj*)f.sr.get();
         if (!alive(sr)) {
             f.sr.clear();
+            f.rs.clear();
             continue;
         }
         int i = (int)((now - f.born) / dur * g_frameN);
         if (i >= g_frameN) {
             callm<void>(S.rEnabled, sr, false);
             f.sr.clear();
+            f.rs.clear();
             continue;
         }
+        live++;
         if (i < 0) i = 0;
-        // the game's own sparks (spawned by the effect after it was cloned): in the skin's colours (hidden with hideParticles)
-        Obj* go = (Obj*)f.go.get();
-        Il2CppArray* rs = alive(go) ? componentsInChildren(go, S.Renderer) : nullptr;
+        // the game's own sparks (spawned by the effect after it was cloned): in the skin's colours (hidden with
+        // hideParticles). The renderer list (a new managed array each time: 1.2.0 asked every frame for every effect)
+        // is looked up again on frames 0, 1, 2, 4, 8, 16, 32 of the effect; in between the kept one is used.
+        int fr = f.frames++;
+        bool fresh = fr <= 2 || fr == 4 || fr == 8 || fr == 16 || fr == 32;
+        Il2CppArray* rs = nullptr;
+        if (fresh) {
+            Obj* go = (Obj*)f.go.get();
+            rs = alive(go) ? componentsInChildren(go, S.Renderer) : nullptr;
+            if (rs) f.rs.set(rs);
+        } else {
+            rs = (Il2CppArray*)f.rs.get();
+        }
         for (uintptr_t k = 0; rs && k < rs->max_length; k++) {
             Obj* r = (Obj*)arrayData(rs)[k];
             if (!r || r == sr || !alive(r)) continue;
-            if (g_info.hideParticles) callm<void>(S.rEnabled, r, false);
-            else if (g_info.hitFxTinted) critTintRenderer(r, sparkTint(f.good));
+            if (g_info.hideParticles) callm<void>(S.rEnabled, r, false);  // the game may turn them on again
+            else if (fresh && g_info.hitFxTinted) critTintRenderer(r, sparkTint(f.good));  // the material stays ours
         }
         callm<void>(S.srSetSprite, sr, (Obj*)g_frames[i].get());
         callm<void>(S.srSetColor, sr, f.c);  // after the game's fade animation
         if (S.trSetLocal) callm<void>(S.trSetLocal, goTransform(gameObject(sr)), f.scale);
     }
+    g_fxLive = live;
 }
 // ---- the settings' delay preview: its note in the skin's tap look, its click effect (skinOnClone) and sounds ----
 static Handle g_uiTap;  // the skin's tap image as a UI sprite
@@ -907,7 +991,7 @@ static void skinFrame(void*) {
     fxTick();
     g_nextScan -= unscaledDt();
     bool force = g_nextScan <= 0;
-    if (force) g_nextScan = 1.f;
+    if (force) g_nextScan = g_stableScans >= 3 ? 5.f : 1.f;  // settled: a safety rescan every 5 s only
     scanNotes(force);
 }
 
@@ -923,6 +1007,9 @@ void skinLevelStart(Obj* pc) {
     g_inLevelFrames = 0;
     g_diag = 0;
     for (Handle& h : g_hl) h.clear();
+    for (Obj*& h : g_hlRaw) h = nullptr;
+    g_endOrig.clear();
+    g_stableScans = 0;
     // the game's sprites of the last song are gone (it loads them again per song): a fresh map, so it never fills up
     // (0.28.7 kept them: after two or three songs the 24 entries were full and notes stayed unskinned)
     for (int i = 0; i < g_mapN; i++) g_map[i].from.clear(), g_map[i].to.clear();
@@ -946,7 +1033,7 @@ static const char* errText(SkinError e) {
     case SKE_INFO_SYNTAX: return T("info.yml 格式有误。", "info.yml has a syntax error.");
     case SKE_INFO_VALUE: return T("info.yml 里有不合法的数值。", "info.yml has an invalid value.");
     case SKE_MISSING_FILE: return T("缺少必需的图片。", "A required image is missing.");
-    case SKE_BAD_IMAGE: return T("有图片不是合法的 PNG，或尺寸不对。", "An image is not a valid PNG or has the wrong size.");
+    case SKE_BAD_IMAGE: return T("有图片不是 PNG / JPG，或者超过 4096 像素。", "An image is not a PNG / JPG, or is over 4096 px.");
     case SKE_BAD_SOUND: return T("有音效文件格式不对。", "A sound file has the wrong format.");
     case SKE_NO_MEMORY: return T("内存不足。", "Out of memory.");
     default: return "";

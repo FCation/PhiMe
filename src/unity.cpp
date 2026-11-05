@@ -1,4 +1,5 @@
 #include "unity.h"
+#include "perf.h"
 
 using namespace il2cpp;
 
@@ -880,10 +881,34 @@ void uiFadeAway(Obj* rt) {
 // the game's scene wipe: CutOut (leaving a scene) / CutIn (entering one), from the Instantiate hook
 void uiFadeOnClone(Obj* src, Obj* clone) {
     if (!src || !clone || !U.GameObject || il2cpp_object_get_class(src) != U.GameObject) return;
+    // Hit effects are cloned on every hit: a source already seen to be neither a popup nor a wipe is skipped without
+    // asking its name (a new managed string each time). The list is per scene: prefabs stay put within one.
+    static Obj* plain[16];
+    static int plainN = 0, plainNext = 0, plainScene = -1;
+    int scene = activeSceneHandle();
+    if (scene != plainScene) {
+        plainScene = scene;
+        plainN = plainNext = 0;
+    }
+    for (int i = 0; i < plainN; i++)
+        if (plain[i] == src) return;
     char n[24] = "";
     objName(src, n, sizeof n);
+    // the game's popups, as a trail in the log (the cloud sync is SelectSavePopup -> ConfirmationPopup -> MsgBox)
+    static int popups = 0;
+    bool popup = false;
+    int len = (int)strlen(n);
+    for (int i = 0; i + 5 <= len && !popup; i++) popup = !memcmp(n + i, "Popup", 5) || (i + 6 <= len && !memcmp(n + i, "MsgBox", 6));
+    if (popup && popups++ < 60) LOG("ui: popup '%s'", n);
     bool out = !memcmp(n, "CutOut", 6), in = !memcmp(n, "CutIn", 5);
-    if (!out && !in) return;
+    if (!out && !in) {
+        if (!popup) {
+            plain[plainNext] = src;
+            plainNext = (plainNext + 1) % 16;
+            if (plainN < 16) plainN++;
+        }
+        return;
+    }
     Il2CppArray* cs = componentsInChildren(clone, U.Canvas);
     int nc = cs ? (int)cs->max_length : 0, raised = 0;
     for (int i = 0; i < nc; i++) {
@@ -1574,7 +1599,35 @@ void ensureEventSystem() {
 static NativeCallback g_frameCbs[32];
 static int g_frameCbCount = 0;
 static Handle g_frameDelegate;
+// Watchdog: a plain thread (no Unity, no IL2CPP) that notices when the main thread stops drawing frames, e.g. the
+// game's own blocking WebClient.DownloadFile in the cloud sync, and logs how long it stayed stuck.
+static volatile int g_mainTick = 0;
+static void* watchdog(void*) {
+    int last = g_mainTick, stuck = 0;
+    for (;;) {
+        usleep(1000000);
+        int now = g_mainTick;
+        if (now != last) {
+            if (stuck >= 3) LOG("watchdog: the main thread is drawing again after %d s", stuck);
+            stuck = 0;
+            last = now;
+        } else if (now > 0) {
+            stuck++;
+            if (stuck == 3 || stuck == 10 || stuck % 30 == 0) LOG("watchdog: no frame for %d s (main thread blocked, or the app is in the background)", stuck);
+        }
+    }
+    return nullptr;
+}
 static void frameDispatch(void*) {
+    static bool started = false;
+    if (!started) {
+        started = true;
+        void* th = nullptr;
+        if (pthread_create(&th, nullptr, watchdog, nullptr) == 0) pthread_detach(th);
+    }
+    g_mainTick++;
+    perfFrame();  // closes the last frame's numbers
+    PerfScope ps(PF_CALLBACKS);
     for (int i = 0; i < g_frameCbCount; i++) g_frameCbs[i](nullptr);
 }
 void onEveryFrame(NativeCallback cb) {

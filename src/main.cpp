@@ -23,7 +23,12 @@ static int openAndroidLog() {
     mkdir(path, 0770);
     snprintf(path, sizeof(path), "/sdcard/Android/media/%s/PhiMeMod/PhiMeMod-least.log", pkg);
     g_leastFd = open(path, 0x0001 | 0x0040 | 0x0200, 0660);  // O_WRONLY|O_CREAT|O_TRUNC
+    // the last launch's full log is kept as PhiMeMod-prev.log: after a hang the game gets restarted, and the log of
+    // the launch that hung is the one we need
+    char prev[320];
     snprintf(path, sizeof(path), "/sdcard/Android/media/%s/PhiMeMod/PhiMeMod.log", pkg);
+    snprintf(prev, sizeof(prev), "/sdcard/Android/media/%s/PhiMeMod/PhiMeMod-prev.log", pkg);
+    rename(path, prev);
     return open(path, 0x0001 | 0x0040 | 0x0200, 0660);
 }
 #endif
@@ -66,10 +71,28 @@ extern "C" __attribute__((visibility("default"))) int PhiMe_Claim(int version) {
     return best;
 }
 
+// Two copies of the SAME version (a signing tool injecting the dylib again into PhiMe's already-injected IPA) both
+// passed the version check and ran side by side (1.0.0, seen on a user's iPad: every hook twice, the second set
+// failing). So each copy also registers a marker of its own; of the copies with the newest version, the first one
+// registered is the one that runs. PhiMe_Owner(0, null) asks who that is.
+static char g_me;  // its address is unique to this copy
+extern "C" __attribute__((visibility("default"))) void* PhiMe_Owner(int version, void* me) {
+    static int bestV = 0;
+    static void* owner = nullptr;
+    if (me && (version > bestV || (version == bestV && !owner))) {
+        bestV = version;
+        owner = me;
+    }
+    return owner;
+}
+
 typedef int (*ClaimFn)(int);
+typedef void* (*OwnerFn)(int, void*);
 static void claimNow() {  // at load time: every injected copy has reported long before IL2CPP is up
     ClaimFn c = (ClaimFn)dlsym(PM_RTLD_DEFAULT, "PhiMe_Claim");
     if (c) c(PM_VERSION_NUM);
+    OwnerFn o = (OwnerFn)dlsym(PM_RTLD_DEFAULT, "PhiMe_Owner");
+    if (o) o(PM_VERSION_NUM, &g_me);
 }
 static bool newestCopy() {
     ClaimFn c = (ClaimFn)dlsym(PM_RTLD_DEFAULT, "PhiMe_Claim");
@@ -77,6 +100,12 @@ static bool newestCopy() {
     int best = c(0);
     if (best > PM_VERSION_NUM) {
         pm_log("PhiMeMod v" PM_VERSION ": a newer copy (%d) is loaded too, this one stays off", best);
+        return false;
+    }
+    OwnerFn o = (OwnerFn)dlsym(PM_RTLD_DEFAULT, "PhiMe_Owner");
+    void* owner = o ? o(0, nullptr) : nullptr;
+    if (owner && owner != &g_me) {
+        pm_log("PhiMeMod v" PM_VERSION ": another copy of this version is loaded too (injected twice?), this one stays off");
         return false;
     }
     return true;
@@ -116,10 +145,12 @@ static void* initThread(void*) {
     bool sn = u && skinInstall();
     bool ch = u && challengeInstall();
     bool mk = u && maskInstall();
+    bool b3 = u && b30Install();
+    if (u) unityLogInstall();
     pm_log("init: unity=%d autoplay=%d panel=%d result=%d practice=%d resume=%d hud=%d loading=%d "
            "critical=%d course=%d details=%d savedata=%d title=%d account=%d rks=%d resacc=%d hitsound=%d skip=%d "
-           "skin=%d challenge=%d mask=%d",
-           u, a, p, r, pr, rs, h, l, c, co, d, sv, ti, ac, rk, ra, hs, sk, sn, ch, mk);
+           "skin=%d challenge=%d mask=%d b30=%d",
+           u, a, p, r, pr, rs, h, l, c, co, d, sv, ti, ac, rk, ra, hs, sk, sn, ch, mk, b3);
     // this thread is about to exit: unregister it so the GC never tries to suspend a dead thread
     if (thread) il2cpp::il2cpp_thread_detach(thread);
     return nullptr;

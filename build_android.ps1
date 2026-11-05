@@ -19,7 +19,7 @@ $link = @("-shared", "-fuse-ld=lld", "-Wl,-z,max-page-size=16384", "-Wl,--build-
 
 # ---- link-time stubs for system libraries ----
 $stubs = @{
-  "libc.so"   = "open read pread lseek write close mkdir rename unlink stat time snprintf vsnprintf strlen strcmp memcmp memcpy memmove memset calloc malloc free qsort getenv usleep pthread_create pthread_detach"
+  "libc.so"   = "open read pread lseek write close mkdir rename unlink stat time snprintf vsnprintf strlen strcmp memcmp memcpy memmove memset calloc malloc realloc free qsort getenv usleep pthread_create pthread_detach"
   "libm.so"   = "cos sin sincos sincosf pow exp log ldexp"
   "libdl.so"  = "dlopen dlsym dlerror"
   "liblog.so" = "__android_log_print"
@@ -74,7 +74,7 @@ $src = Get-ChildItem (Join-Path $root "src") -Filter *.cpp | ForEach-Object { $_
 $fontsDir = (Join-Path $root "assets\fonts").Replace('\', '/')
 [IO.File]::WriteAllText((Join-Path $out "pm_assets.h"), "#pragma once`n#define PM_FONTS_DIR `"$fontsDir`"`n")
 $mod = Join-Path $out "libPhiMeMod.so"
-& "$llvm\clang++.exe" @common "-std=c++17" "-fvisibility=hidden" "-nostdinc++" "-I$out" @link "-Wl,-soname,libPhiMeMod.so" `
+& "$llvm\clang++.exe" @common "-std=c++17" "-fvisibility=hidden" "-nostdinc++" "-I$out" "-idirafter$(Join-Path $root 'src\third_party\libc')" @link "-Wl,-soname,libPhiMeMod.so" `
   @src @stubLibs -o $mod
 if ($LASTEXITCODE -ne 0) { throw "mod build failed" }
 

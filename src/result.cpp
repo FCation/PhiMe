@@ -71,6 +71,7 @@ static void h_deleteKey(void* k) {
 }
 static void h_deleteAll() {
     if (drop("DeleteAll")) return;
+    LOG("savedata: the game is replacing the local save (PlayerPrefs.DeleteAll)");
     saveWipe(false);  // the game loading a (cloud) save: PhiMe's own keys survive, its phime.json is merged
     o_deleteAll();
     saveWipe(true);

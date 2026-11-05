@@ -13,17 +13,28 @@
 // next start is logged in by the game's own TapSDKWrapper.Init (TDSUser.GetCurrent). The account screen is then
 // rebuilt by its own Start. (LoginWithTapTap itself can't be swapped: the game calls it directly, not through its
 // MethodInfo.) 登出 (StatsFrameController.Logout) is the game's, and our saved token is forgotten too.
-// iOS has no signature check: nothing is hooked there.
+// iOS: the game's login works when the app kept its bundle ID (TrollStore, wildcard-profile certificates). Apple-ID
+// signing changes it, and TapTap then answers "-101 sdk_not_matched": only then does 登录 run PhiMe's QR login
+// (cloud_ios.cpp), the rest being the same as on Android.
 #include "mod.h"
 
 using namespace il2cpp;
 using namespace unity;
 
+static const char* kOfficialId = "games.Pigeon.Phigros";
 #if defined(__APPLE__)
-bool accountInstall() { return false; }
-bool accountLoggedIn() { return true; }
-bool accountLoginNow() { return false; }
+const char* iosBundleId();  // cloud_ios.cpp
+const char* accountBundleId() { return iosBundleId(); }
+// the game's own login works only with the official bundle ID
+bool accountModLogin() {
+    const char* b = iosBundleId();
+    return b[0] && strcmp(b, kOfficialId) != 0;
+}
 #else
+const char* accountBundleId() { return kOfficialId; }
+bool accountModLogin() { return cloudAvailable(); }  // the re-signed APK: always
+#endif
+
 typedef void (*VoidFn)(Obj*, const MethodInfo*);
 static VoidFn orig_SFC_Login, orig_SFC_Logout;
 static const MethodInfo *g_become, *g_loggedIn, *g_setUser, *g_sfcStart;
@@ -78,6 +89,7 @@ static void accountFrame(void*) {
     LOG("account: the game is logged in as %s (its own sync and auto sync work now)", g_nick);
     Obj* scr = (Obj*)g_screen.get();
     if (alive(scr) && g_sfcStart) invokeSafe(g_sfcStart, scr);  // the account screen shows the logged-in state
+    panelRefresh();  // the panel's 账号 page, if it is open
     char b[400];
     snprintf(b, sizeof b, T("已用 %s 登录。\n\n游戏自己的云存档同步可以用了：账号页的「同步」，以及打开自动同步后每打完一首歌自动上传。云端存档被别的设备改过时，游戏会让你选择保留哪份，自动同步不会覆盖。",
                             "Logged in as %s.\n\nThe game's own cloud sync works now: Sync on the account page, and the upload after every song when auto sync is on. If the cloud save changed elsewhere the game asks which one to keep; auto sync never overwrites it."),
@@ -101,19 +113,21 @@ static void onToken(const char* token, const char* nick) {
     LOG("account: TapTap QR login done (%s), the game's SDK takes the token", g_nick);
 }
 
-bool accountLoggedIn() { return loggedIn(); }
+bool accountLoggedIn() { return g_loggedIn ? loggedIn() : false; }
+const char* accountNick() { return g_nick; }  // known after a PhiMe login in this session ("" otherwise)
 // the first-run guide's 现在登录: the same login without the account screen
 bool accountLoginNow() {
-    if (!g_become || !g_setUser || loggedIn()) return false;
+    if (!g_become || !g_setUser || loggedIn() || !accountModLogin()) return false;
     g_screen.clear();
     return cloudLogin(onToken);
 }
 
 static void hk_SFC_Login(Obj* self, const MethodInfo* m) {
-    if (loggedIn() || !cloudAvailable()) {
-        orig_SFC_Login(self, m);
+    if (loggedIn() || !accountModLogin() || !cloudAvailable()) {
+        orig_SFC_Login(self, m);  // the game's own TapTap login
         return;
     }
+    LOG("account: 登录 -> PhiMe's TapTap QR login (bundle ID %s)", accountBundleId());
     g_screen.set(self);
     if (!cloudLogin(onToken)) orig_SFC_Login(self, m);
 }
@@ -123,6 +137,7 @@ static void hk_SFC_Logout(Obj* self, const MethodInfo* m) {
     orig_SFC_Logout(self, m);
     if (was) {
         cloudForget();
+        g_nick[0] = 0;
         LOG("account: logged out, the saved TapTap login is forgotten too");
     }
 }
@@ -143,7 +158,7 @@ bool accountInstall() {
         orig_SFC_Logout = (VoidFn)hookMethod(logout, (void*)hk_SFC_Logout);
         ok = orig_SFC_Login && orig_SFC_Logout;
     }
-    LOG("account: game login through PhiMe's TapTap login %s", ok ? "on" : "OFF");
+    LOG("account: game login through PhiMe's TapTap login %s (bundle ID %s: %s)", ok ? "on" : "OFF", accountBundleId(),
+        accountModLogin() ? "PhiMe's QR login" : "the game's own login");
     return ok;
 }
-#endif

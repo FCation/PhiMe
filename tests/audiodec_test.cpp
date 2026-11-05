@@ -249,6 +249,59 @@ void oggTests(const char* directory) {
     check(repeat, "Repeated Ogg decoding and cleanup");
 }
 
+// MP3 / FLAC fixtures made by the build script with ffmpeg: a 440 Hz tone at half volume.
+// name, rate, channels out, seconds (0 = expect AUE_TOO_LONG)
+void mp3FlacTests(const char* directory) {
+    struct Case { const char* name; int rate, channels; float seconds; };
+    const Case cases[] = {
+        {"tone.mp3", 44100, 1, 0.5f},          // with an ID3v2 tag
+        {"tone_stereo.mp3", 48000, 2, 0.5f},   // no tag: starts with a frame sync
+        {"tone.flac", 44100, 2, 0.5f},
+        {"tone_51.flac", 48000, 2, 0.5f},      // 6 channels, 24 bit: mixed down to stereo
+        {"tone_id3.flac", 44100, 1, 0.5f},     // an ID3v2 tag in front of fLaC
+        {"long.mp3", 44100, 1, 0},
+        {"long.flac", 44100, 1, 0},
+    };
+    for (const Case& c : cases) {
+        Buffer b;
+        if (!load(b, directory, c.name)) {
+            char label[100]; snprintf(label, sizeof(label), "%s fixture present", c.name);
+            check(false, label);
+            continue;
+        }
+        PcmAudio a = {};
+        AudioError err;
+        char detail[128];
+        bool ok = audioDecode(b.data, b.size, &a, &err, detail, sizeof(detail));
+        char label[120];
+        if (!c.seconds) {
+            snprintf(label, sizeof(label), "%s over 20 s rejected", c.name);
+            check(!ok && err == AUE_TOO_LONG && zero(a), label);
+            continue;
+        }
+        if (!ok) printf("  %s: %s %s\n", c.name, audioErrorName(err), detail);
+        uint32_t want = uint32_t(c.rate * c.seconds);
+        int peak = 0;
+        if (ok) for (uint32_t i = 0; i < a.frames * a.channels; ++i) {
+            int v = a.samples[i] < 0 ? -a.samples[i] : a.samples[i];
+            if (v > peak) peak = v;
+        }
+        // MP3 adds up to two frames of encoder delay / padding; the tone is at half volume (5.1 is averaged)
+        bool length = a.frames + 64 >= want && a.frames <= want + 2 * 1152 + 64;
+        snprintf(label, sizeof(label), "%s decodes (%d Hz, %d ch, %u frames, peak %d)", c.name, a.rate, a.channels,
+                 a.frames, peak);
+        check(ok && err == AUE_OK && a.rate == c.rate && a.channels == c.channels && length && peak > 4000 && peak < 20000,
+              label);
+        Buffer half; half.resize(b.size / 2); memcpy(half.data, b.data, half.size);
+        PcmAudio h = {};
+        bool hok = audioDecode(half.data, half.size, &h, &err, detail, sizeof(detail));
+        snprintf(label, sizeof(label), "half of %s fails or decodes less, cleanly", c.name);
+        check(hok ? h.frames <= a.frames : zero(h), label);
+        audioFree(&h);
+        audioFree(&a);
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -274,6 +327,7 @@ int main(int argc, char** argv) {
     wavTests();
     check(argc == 2, "Ogg fixture directory provided");
     if (argc == 2) oggTests(argv[1]);
+    if (argc == 2) mp3FlacTests(argv[1]);
     printf("%d cases, %d failures\n", cases, failures);
     return failures;
 }

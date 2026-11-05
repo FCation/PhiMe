@@ -1,8 +1,9 @@
 #pragma once
 #include "unity.h"
+#include "perf.h"
 
-#define PM_VERSION "1.0.0"
-#define PM_VERSION_NUM 10000 // major * 10000 + minor * 100 + patch (PhiMe_Claim)
+#define PM_VERSION "1.3.0"
+#define PM_VERSION_NUM 10300 // major * 10000 + minor * 100 + patch (PhiMe_Claim)
 
 struct ModConfig {
     bool loaded = false;
@@ -11,6 +12,7 @@ struct ModConfig {
     int practiceSpeed = 100; // percent, step 5
     bool practiceLoop = false;
     bool practiceKeepPitch = true;
+    int practiceFlow = 100;  // practice note flow speed, percent of the chart's (50..2000, log slider in practice_ui)
     bool resumePreview = true;     // own prepare countdown after "continue", replaying the chart
     int resumePreviewTenths = 30;  // prepare time, 0..30 tenths of a second (0 = start at once)
     // in-level HUD (hud.cpp)
@@ -18,6 +20,7 @@ struct ModConfig {
     int accMode = 0;        // 0 = live (judged notes only), 1 = best reachable (100% minus what is lost)
     bool accSwap = false;   // accuracy takes the big score slot, the score becomes the small line
     bool judgeShow = false; // Perfect / Good / Bad+Miss counts under the combo
+    bool hideScore = false; // hide the score + combo corner (combo number, COMBO label, score, our accuracy / counts)
     bool fastLoad = true;   // shorter song loading screen (loading.cpp)
     bool critical = false;  // Critical Perfect (<= 40 ms) vs Perfect (critical.cpp)
     bool course = false;    // course (challenge) mode judging and scoring, records kept locally (course.cpp)
@@ -166,7 +169,11 @@ bool resAccOwnsBest();                    // the ACC best line is shown (course.
 bool resAccOldBest(float* acc);           // this result's record accuracy from before the play (false = unknown)
 void prefSetIntRaw(const char* key, int v);  // result.cpp: past the autoplay save sandbox
 void forEachChart(void (*cb)(const char* id, const char* level, void* user), void* user);  // every song, every level
-enum { SAVE_OPEN_FOLDER, SAVE_SKIN_IMPORT, SAVE_MASK_PREVIEW, SAVE_LICENSE };
+enum { SAVE_OPEN_FOLDER, SAVE_SKIN_IMPORT, SAVE_MASK_PREVIEW, SAVE_LICENSE, SAVE_B30, SAVE_TUTORIAL, SAVE_LOGIN,
+       SAVE_FORGET_LOGIN };
+bool b30Install();  // b30.cpp: the in-game score checker (Best 27 + Phi 3, 推分)
+void b30Open();
+bool unityLogInstall();  // unitylog.cpp: Unity's own errors / exceptions into PhiMeMod.log
 bool openFolder(const char* path);  // filepicker.cpp: the Files app (iOS) / a file manager (Android) at this folder
 void saveAction(int action);       // the settings panel's buttons
 const char* saveFolderHint();      // the mod folder, short form for the panel
@@ -181,6 +188,7 @@ struct SaveDialog {
     bool modal;
     float bodyW;  // 0 = full width
     void (*decorate)(Obj* card);
+    float height;  // 0 = 470; taller cards get a taller text box
 };
 void saveDialog(const SaveDialog& d);
 bool saveDialogOpen();
@@ -188,16 +196,21 @@ void saveDialogClose();
 void saveDialogBody(const char* body);  // new text for the open card
 void saveMessage(const char* title, const char* body);  // a card with one "好"
 bool saveTempFile(char* out, int cap, const char* dir, const char* file);  // "<game cache>/<dir>/<file>", dir emptied
-// TapTap login (cloud.cpp, Android; the cloud pull was removed for the release: mod/disabled/saves)
+// TapTap QR login (cloud.cpp + Java on Android, cloud_ios.cpp on iOS; the cloud pull was removed: mod/disabled/saves)
 void cloudPoll();                    // per frame (savedata.cpp)
-bool cloudAvailable();               // Android with the Java side loaded
+bool cloudAvailable();               // Android: the Java side loaded; iOS: always
 // a TapTap login only (saved token or QR): onToken(sessionToken, nickname) on success; false = could not start
 bool cloudLogin(void (*onToken)(const char* token, const char* nick));
 void cloudForget();                  // delete the saved token
-// the game's own account login on the re-signed APK (account.cpp, Android): its sync / auto sync then work
+// the game's own account login where its TapTap login is refused (account.cpp): its sync / auto sync then work
 bool accountInstall();
-bool accountLoggedIn();  // TapSDKWrapper.LoggedIn (iOS: always true, no guide needed)
+bool accountLoggedIn();  // TapSDKWrapper.LoggedIn
 bool accountLoginNow();  // start the login from anywhere (the first-run guide); false = could not start
+bool accountModLogin();  // 登录 runs PhiMe's QR login: Android always, iOS when the bundle ID is not the official one
+const char* accountBundleId();  // iOS: this install's bundle ID
+const char* accountNick();      // the TapTap nickname after a PhiMe login in this session ("" = unknown)
+void tutorialOpen();     // savedata.cpp: the first-run guide again (关于 → 新手引导)
+const char* loginHelpText();  // savedata.cpp: how this install logs in, and why (guide page 5, the 账号 tab)
 // the system file picker (filepicker.cpp): iOS UIDocumentPicker / Android Storage Access Framework
 enum { PICK_ZIP, PICK_JSON };
 // status 1 = done (open: `path` is a readable copy of the chosen file), 0 = cancelled, -1 = failed (`name` = why);

@@ -13,14 +13,15 @@ The user talks in Chinese and tests on an iPad (iOS) mostly; they send `PhiMeMod
 |---|---|---|
 | iOS dylib | `powershell -ExecutionPolicy Bypass -File mod\build_ios.ps1` | `mod\out\PhiMeMod.dylib` |
 | Android .so | `powershell -ExecutionPolicy Bypass -File mod\build_android.ps1` | `mod\out\android\libPhiMeMod.so` (+ `libmain.so`) |
-| skin pack parser tests | `powershell -ExecutionPolicy Bypass -File mod\tests\build_skinpack_test.ps1` | 104 cases |
-| audio decoder tests | `powershell -ExecutionPolicy Bypass -File mod\tests\build_audiodec_test.ps1` | 52 cases |
+| skin pack parser tests | `powershell -ExecutionPolicy Bypass -File mod\tests\build_skinpack_test.ps1` | 112 cases |
+| audio decoder tests | `powershell -ExecutionPolicy Bypass -File mod\tests\build_audiodec_test.ps1` | 64 cases (needs ffmpeg for the MP3 / FLAC fixtures) |
 | install IPA | `mod\ios\package_ipa.ps1 -Ipa games.Pigeon.Phigros-4.0.1.2.ipa` | `mod\out\ios\Phigros-PhiMeMod.ipa` |
 | install APK | `mod\android\repack.ps1 -Apk com.PigeonGames.Phigros.apk` | `mod\out\android\Phigros-PhiMeMod.apk` |
 
 - Toolchain: LLVM at `C:\Program Files\LLVM\bin` (clang++, ld64.lld, ld.lld). No Xcode, no NDK.
-- Both build scripts compile **every `mod/src/*.cpp`** (not subfolders). `mod/src/third_party/stb_vorbis.c` is
-  `#include`d by `audiodec.cpp` only.
+- Both build scripts compile **every `mod/src/*.cpp`** (not subfolders). `mod/src/third_party/stb_vorbis.c`,
+  `dr_mp3.h` and `dr_flac.h` (unmodified) are `#include`d by `audiodec.cpp` only. Their `<stdlib.h>` / `<string.h>` /
+  `<assert.h>` / `<endian.h>` resolve to PhiMe's stand-ins in `mod/src/third_party/libc` (`-idirafter` in both builds).
 - After every build bump `PM_VERSION` / `PM_VERSION_NUM` in `mod/src/mod.h` (e.g. "0.32.1" / 3201) and check the
   new version string is in the dylib. The user installs the dylib + .so by hand.
 - Keep `mod/android/phimemod.keystore` + `keystore.local.txt`: APKs must be signed with it to update in place.
@@ -86,12 +87,16 @@ The user talks in Chinese and tests on an iPad (iOS) mostly; they send `PhiMeMod
 | course.cpp | PhiMe course mode | |
 | challenge.cpp | game's own challenge mode: per-song mirror | EnterLevel + LevelControl.<Start>d__46 hooks |
 | savedata.cpp | phime.json inside the game's cloud save, dialog card, first-run welcome, panel buttons | save import / export, all-unlocked save: removed for the release (`mod/disabled/saves`) |
-| cloud.cpp, account.cpp | Android: TapTap QR login handed to the game's own SDK | the cloud pull was removed (`mod/disabled/saves/cloud.cpp`) |
+| cloud.cpp, account.cpp | TapTap QR login handed to the game's own SDK (Android always; iOS when the bundle ID is not `games.Pigeon.Phigros`) | cloud.cpp: event queue + cards; the network part is Java on Android, `cloud_ios.cpp` on iOS; the cloud pull was removed (`mod/disabled/saves/cloud.cpp`) |
+| cloud_ios.cpp, qr.cpp | iOS login backend (NSURLSession through the ObjC runtime, CCHmac), QR encoder (port of Qr.java) | everything dlsym'd, no link stubs |
+| b30.cpp | B30 page (Best 27 + Phi 3, 推分) | panel 游玩 tab |
+| perf.h/.cpp | "perf:" log lines: PhiMe's cost per frame by part, every 10 s of a song | `PerfScope` |
+| unitylog.cpp | Unity's own log / exceptions into our log | hooks DebugLogHandler icalls (the log events are stripped) |
 | filepicker.cpp | system file picker (skin import), open the mod folder | |
 | hitsound.cpp | 正解音 (on-time hit sounds) | PlayHitFx delegate patched; plays from `chartNoteSortByTime` |
 | skip.cpp | SKIP intro / ending | music resync after jumps |
 | skinpack.cpp/.h | Phira pack parser (zip+inflate+yml+checks) | pure, tested |
-| audiodec.cpp/.h | OGG Vorbis / WAV → PCM16 | wraps stb_vorbis, tested |
+| audiodec.cpp/.h | Ogg Vorbis / WAV / FLAC / MP3 → PCM16 (by content, max 20 s) | stb_vorbis + dr_flac + dr_mp3, tested |
 | skin.cpp | Phira skins: notes, hit fx, colours, library, settings preview | see "Skin" below |
 | skinsound.cpp | skin hit sounds + per-colour volume | swaps SEPlayer tables |
 | mask.cpp | 上隐条 (top hide bar) + its preview page | |

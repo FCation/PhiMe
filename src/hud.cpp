@@ -165,9 +165,80 @@ static void updateJudge(Obj* sc, Obj* judge, bool crit) {
     setTextStr(judge, (Il2CppString*)g_judgeStr.get());
 }
 
+// ---- 隐藏分数和连击: every UI Graphic field named *score* / *combo* on ScoreControl and LevelUICont (the combo number,
+// the COMBO / AUTOPLAY label, the score) is disabled each frame; our lines are their children and go with them ----
+struct Hidden {
+    Il2CppClass* k;
+    int off[10];
+    int n;
+    bool scanned;
+};
+static Hidden g_hideSC, g_hideUI;
+static Il2CppClass* g_LevelUI = nullptr;
+static Handle g_hideFor, g_levelUI;  // the ScoreControl the LevelUICont was looked up for
+static bool hasWord(const char* s) {  // "score" or "combo", any case
+    size_t n = strlen(s);
+    for (size_t i = 0; i + 5 <= n; i++) {
+        char w[6];
+        for (int j = 0; j < 5; j++) w[j] = (s[i + j] >= 'A' && s[i + j] <= 'Z') ? char(s[i + j] + 32) : s[i + j];
+        w[5] = 0;
+        if (!strcmp(w, "score") || !strcmp(w, "combo")) return true;
+    }
+    return false;
+}
+static bool isGraphic(Il2CppClass* k) {
+    for (; k; k = il2cpp_class_get_parent(k))
+        if (!strcmp(il2cpp_class_get_name(k), "Graphic")) return true;
+    return false;
+}
+static void scanHidden(Hidden& h, Il2CppClass* k) {
+    h.k = k;
+    h.n = 0;
+    h.scanned = true;
+    char names[240] = "";
+    void* it = nullptr;
+    while (FieldInfo* f = il2cpp_class_get_fields(k, &it)) {
+        if (h.n >= 10) break;
+        if (il2cpp_field_get_flags(f) & 0x10) continue;  // static
+        const Il2CppType* t = il2cpp_field_get_type(f);
+        if (il2cpp_type_get_type(t) != IL2CPP_TYPE_CLASS || !isGraphic(il2cpp_class_from_type(t))) continue;
+        const char* name = il2cpp_field_get_name(f);
+        if (!hasWord(name)) continue;
+        h.off[h.n++] = (int)il2cpp_field_get_offset(f);
+        size_t l = strlen(names);
+        snprintf(names + l, sizeof names - l, "%s%s", l ? ", " : "", name);
+    }
+    LOG("hud: hide score/combo on %s: %s", il2cpp_class_get_name(k), h.n ? names : "nothing found");
+}
+static void hideIn(Obj* o, Hidden& h) {
+    if (!o) return;
+    if (!h.scanned) scanHidden(h, il2cpp_object_get_class(o));
+    for (int i = 0; i < h.n; i++) {
+        Obj* g = fld<Obj*>(o, h.off[i]);
+        if (alive(g)) setEnabled(g, false);
+    }
+}
+static void hideScoreCorner(Obj* sc) {
+    hideIn(sc, g_hideSC);
+    if (sc != g_hideFor.get()) {  // a new level: LevelUICont looked up once
+        g_hideFor.set(sc);
+        g_levelUI.clear();
+        if (!g_LevelUI) g_LevelUI = findClass("", "LevelUICont");
+        Obj* ui = g_LevelUI ? findObjectOfType(g_LevelUI) : nullptr;
+        if (ui) g_levelUI.set(ui);
+    }
+    Obj* ui = (Obj*)g_levelUI.get();
+    if (alive(ui)) hideIn(ui, g_hideUI);
+}
+
 static void hk_SC_Update(Obj* self, const MethodInfo* m) {
     orig_SC_Update(self, m);
+    PerfScope ps(PF_HUD);
     configLoad();
+    if (g_cfg.hideScore) {
+        hideScoreCorner(self);
+        return;  // no accuracy line / counts to keep up either
+    }
     bool crit = critEnabled();
     if (!g_cfg.accShow && !g_cfg.judgeShow && !crit) return;
     if (self != g_sc.get()) build(self);  // a new level (or a retry)

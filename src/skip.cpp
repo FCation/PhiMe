@@ -187,26 +187,40 @@ static void computeIntro(Obj* pc) {
             if (err > worst) worst = err;
         }
         if (good && worst < 0.05f) {
-            // from the start, the first moment a note of the first few seconds is on screen
-            for (float t = 0; t < first && enter < 0; t += 0.02f)
-                for (int l = 0; l < nl && enter < 0; l++)
-                    for (int side = 0; side < 2 && enter < 0; side++) {
-                        Obj** nn = nullptr;
-                        int c = listView(fld<Obj*>(lines[l], side ? K.jlBelow : K.jlAbove), &nn);
-                        for (int i = 0; i < c; i++) {
-                            Obj* n = nn[i];
-                            if (!n) continue;
-                            float rt = fld<float>(n, K.noteTime);
-                            if (rt > first + 3.f || rt < t) continue;
-                            bool hold = K.noteType >= 0 && fld<int>(n, K.noteType) == 3;  // a hold's speed is its length
-                            float sp = K.noteSpeed >= 0 && !hold ? fld<float>(n, K.noteSpeed) : 1;
-                            float d = (fld<float>(n, K.noteFloor) - floorAt(L[l], t)) * sp * 0.6f;
-                            if (d >= -0.05f && d <= 1.1f) {
-                                enter = t;
-                                break;
-                            }
-                        }
+            // the notes of the first few seconds, collected once (1.2.0 walked every note of every line at every
+            // 0.02 s step: a hitch when a long-intro song started)
+            struct Early {
+                int line;
+                float rt, floor, sp;
+            };
+            int cap = 256, ne = 0;
+            Early* early = (Early*)malloc(sizeof(Early) * cap);
+            for (int l = 0; early && l < nl; l++)
+                for (int side = 0; side < 2; side++) {
+                    Obj** nn = nullptr;
+                    int c = listView(fld<Obj*>(lines[l], side ? K.jlBelow : K.jlAbove), &nn);
+                    for (int i = 0; i < c && ne < cap; i++) {
+                        Obj* n = nn[i];
+                        if (!n) continue;
+                        float rt = fld<float>(n, K.noteTime);
+                        if (rt > first + 3.f) continue;
+                        bool hold = K.noteType >= 0 && fld<int>(n, K.noteType) == 3;  // a hold's speed is its length
+                        float sp = K.noteSpeed >= 0 && !hold ? fld<float>(n, K.noteSpeed) : 1;
+                        early[ne++] = Early{l, rt, fld<float>(n, K.noteFloor), sp};
                     }
+                }
+            // from the start, the first moment one of them is on screen
+            for (float t = 0; early && t < first && enter < 0; t += 0.02f)
+                for (int i = 0; i < ne; i++) {
+                    const Early& e = early[i];
+                    if (e.rt < t) continue;
+                    float d = (e.floor - floorAt(L[e.line], t)) * e.sp * 0.6f;
+                    if (d >= -0.05f && d <= 1.1f) {
+                        enter = t;
+                        break;
+                    }
+                }
+            free(early);
             if (enter >= 0) {
                 target = enter - 0.3f;
                 how = "speed events";

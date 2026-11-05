@@ -176,10 +176,11 @@ static void snapOne(const char* id, const char* lv, void*) {
     snprintf(g_kv[g_kvN].v, sizeof g_kv[g_kvN].v, "%s", v);
     g_kvN++;
 }
-static int g_guideSeen = 0;  // PhiMeMod.loginGuide, kept across DeleteAll like the rest
+static int g_guideSeen = 0, g_tutorialSeen = 0;  // PhiMeMod.loginGuide / .tutorial, kept across DeleteAll like the rest
 static void modPrefsSnapshot() {
     configLoad();
     g_guideSeen = prefGetInt("PhiMeMod.loginGuide", 0);
+    g_tutorialSeen = prefGetInt("PhiMeMod.tutorial", 0);
     g_kvN = 0;
     forEachChart(snapOne, nullptr);
 }
@@ -188,6 +189,7 @@ static void modPrefsRestore() {
     for (int i = 0; i < g_kvN; i++) prefSetStringRaw(g_kv[i].k, g_kv[i].v);
     prefSetInt("PhiMeMod.welcomed", 1);
     if (g_guideSeen) prefSetInt("PhiMeMod.loginGuide", 1);
+    if (g_tutorialSeen) prefSetInt("PhiMeMod.tutorial", g_tutorialSeen);
     prefSave();
     LOG("savedata: PhiMe settings and %d course records put back", g_kvN);
 }
@@ -265,10 +267,33 @@ static void openLicense() {
     saveMessage(T("开源协议", "License"), b);
 }
 
+static void loginNow();  // the first-run guide's 现在登录 (below), also the 账号 tab's 登录
 void saveAction(int action) {
     onEveryFrame(savedataFrame);  // picker results arrive through it
     if (action == SAVE_LICENSE) {
         openLicense();
+        return;
+    }
+    if (action == SAVE_B30) {
+        b30Open();
+        return;
+    }
+    if (action == SAVE_TUTORIAL) {
+        tutorialOpen();
+        return;
+    }
+    if (action == SAVE_LOGIN) {
+        loginNow();
+        return;
+    }
+    if (action == SAVE_FORGET_LOGIN) {
+        cloudForget();
+        LOG("savedata: the saved TapTap login was cleared from the panel");
+        saveMessage(T("已清除", "Cleared"),
+                    T("PhiMe 保存的 TapTap 登录凭证已删除。下次点「登录」时会重新扫码，可以换一个账号。\n\n"
+                      "游戏当前的登录状态不变；要退出当前账号，请在游戏的账号页点「登出」。",
+                      "PhiMe's saved TapTap login is deleted. The next Log in asks for a new scan, so you can use another "
+                      "account.\n\nThe game stays logged in as it is; to log out, use 登出 on the game's account page."));
         return;
     }
     if (action == SAVE_MASK_PREVIEW) {
@@ -314,7 +339,7 @@ static const int C_CLAY = 0xD97757, C_IVORY = 0xFAF9F5, C_LINE = 0xE8E6DC, C_TEX
 static const float kDW = 760, kDH = 470, kDPad = 44, kDTop = kDH / 2;
 static const Vec2 kDClawd{kDW / 2 - 110, kDTop + 2 + 34};
 static Handle g_dRoot, g_dCard, g_dDim, g_dClawd, g_dBody;
-static float g_dOpenT = -1, g_dClawdT = 0;
+static float g_dOpenT = -1, g_dClawdT = 0, g_dTop = kDTop;  // g_dTop: half the open card's height
 static void (*g_dOk)() = nullptr;
 static void (*g_dCancel)() = nullptr;
 static void (*g_dExtra)() = nullptr;
@@ -391,19 +416,21 @@ void saveDialog(const SaveDialog& d) {
     stretch(rt(dim), -20);
     onClick(gameObject(dim), nullptr, onDlgDim, nullptr);
     g_dDim.set(dim);
+    float H = d.height > kDH ? d.height : kDH, top = H / 2;
+    g_dTop = top;
     Obj* card = newUI("card", root);
-    place(card, Vec2{0.5f, 0.5f}, Vec2{0.5f, 0.5f}, Vec2{0, -16}, Vec2{kDW, kDH});
+    place(card, Vec2{0.5f, 0.5f}, Vec2{0.5f, 0.5f}, Vec2{0, -16}, Vec2{kDW, H});
     g_dCard.set(card);
-    image(card, "border", SPR_ROUND, rgb(C_LINE), Vec2{0.5f, 0.5f}, Vec2{0, 0}, Vec2{kDW + 4, kDH + 4}, 26);
-    image(card, "bg", SPR_ROUND, rgb(C_IVORY), Vec2{0.5f, 0.5f}, Vec2{0, 0}, Vec2{kDW, kDH}, 24, true);
-    g_dClawd.set(image(card, "clawd", SPR_CLAWD, rgb(0xFFFFFF), Vec2{0.5f, 0.5f}, kDClawd, Vec2{120, 68}));
+    image(card, "border", SPR_ROUND, rgb(C_LINE), Vec2{0.5f, 0.5f}, Vec2{0, 0}, Vec2{kDW + 4, H + 4}, 26);
+    image(card, "bg", SPR_ROUND, rgb(C_IVORY), Vec2{0.5f, 0.5f}, Vec2{0, 0}, Vec2{kDW, H}, 24, true);
+    g_dClawd.set(image(card, "clawd", SPR_CLAWD, rgb(0xFFFFFF), Vec2{0.5f, 0.5f}, Vec2{kDClawd.x, top + 2 + 34}, Vec2{120, 68}));
     g_dClawdT = 0;
-    text(card, title, 30, rgb(C_TEXT), MiddleLeft, true, Vec2{0, 0.5f}, Vec2{0, 0.5f}, Vec2{kDPad, kDTop - 52},
+    text(card, title, 30, rgb(C_TEXT), MiddleLeft, true, Vec2{0, 0.5f}, Vec2{0, 0.5f}, Vec2{kDPad, top - 52},
          Vec2{kDW - 2 * kDPad - 120, 44});
-    image(card, "divider", SPR_SOLID, rgb(C_LINE), Vec2{0.5f, 0.5f}, Vec2{0, kDTop - 92}, Vec2{kDW - 2 * kDPad, 2});
+    image(card, "divider", SPR_SOLID, rgb(C_LINE), Vec2{0.5f, 0.5f}, Vec2{0, top - 92}, Vec2{kDW - 2 * kDPad, 2});
     float bw = d.bodyW > 0 ? d.bodyW : kDW - 2 * kDPad;
-    Obj* bt = text(card, body, 22, rgb(C_BODY), UpperLeft, false, Vec2{0, 0.5f}, Vec2{0, 1}, Vec2{kDPad, kDTop - 116},
-                   Vec2{bw, 230});
+    Obj* bt = text(card, body, 22, rgb(C_BODY), UpperLeft, false, Vec2{0, 0.5f}, Vec2{0, 1}, Vec2{kDPad, top - 116},
+                   Vec2{bw, 230 + (H - kDH)});
     setTextWrap(bt, true);
     g_dBody.set(bt);
     float right = kDPad;
@@ -441,67 +468,221 @@ static void dialogTick() {
     Obj* c = (Obj*)g_dClawd.get();
     if (alive(c)) {
         g_dClawdT += dt;
-        setPos(rt(c), Vec2{kDClawd.x, kDClawd.y + clawdHop(g_dClawdT, 14)});
+        setPos(rt(c), Vec2{kDClawd.x, g_dTop + 2 + 34 + clawdHop(g_dClawdT, 14)});
     }
 }
 
-// ======================= first-run welcome =======================
-// Where the settings are, and the release terms in two lines (the full text: PhiMe 小助手 → 关于).
+// ======================= first-run guide (新手引导) =======================
+// Six short pages: what PhiMe is, song select, practice, display + skins, how this install logs in, the last tips.
+// Shown once (pref PhiMeMod.tutorial = 2; 1.1.x and older users get it once too, their old welcome was one card),
+// and again from PhiMe 小助手 → 关于 → 新手引导. The login page depends on the install:
+//   Android: the re-signed APK can't use the game's TapTap login -> PhiMe's QR login (account.cpp)
+//   iOS, official bundle ID (TrollStore, wildcard-profile certificates): the game's own login, PhiMe stays out
+//   iOS, changed bundle ID (Apple-ID signing): the game's login fails with -101 sdk_not_matched -> PhiMe's QR login
 static float g_welcomeAt = -1;
+static const int kTutorialVersion = 2, kPages = 6;
+static int g_page = 0;
+static void showPage();
 
-static void welcomeOk() {
+static bool needModLogin() { return accountModLogin() && cloudAvailable() && !accountLoggedIn(); }
+static void loginNow() {
+    if (accountLoginNow()) return;
+    saveMessage(T("没能开始登录", "Could not start the login"),
+#if defined(__APPLE__)
+                T("PhiMe 的登录组件没准备好，或者游戏的登录组件没找到。日志里 account: 和 cloud(iOS): 开头的行有原因。",
+                  "PhiMe's login could not start, or the game's login was not found. See the log lines starting with account: and cloud(iOS):."));
+#else
+                T("PhiMe 的 Java 部分没有加载（需要 Android 8 以上），或者游戏的登录组件没找到。日志里 account: 开头的行有原因。",
+                  "PhiMe's Java side did not load (needs Android 8+), or the game's login was not found. See the log lines starting with account:."));
+#endif
+}
+static void tutorialFinish(bool login) {
     prefSetInt("PhiMeMod.welcomed", 1);
+    prefSetInt("PhiMeMod.tutorial", kTutorialVersion);
+    prefSetInt("PhiMeMod.loginGuide", 1);  // the login page was part of it
     prefSave();
-    LOG("savedata: welcome read");
-    g_welcomeAt = timeSinceLevelLoad() + 0.4f;  // then the login guide (Android)
+    LOG("savedata: guide finished at page %d%s", g_page + 1, login ? ", logging in" : "");
+    if (login) loginNow();
+}
+static void pageNext() {
+    if (g_page + 1 < kPages) {
+        g_page++;
+        showPage();
+    } else {
+        tutorialFinish(false);
+    }
+}
+static void pagePrev() {
+    if (g_page > 0) g_page--;
+    showPage();
+}
+static void pageSkip() { tutorialFinish(false); }
+static void pageLogin() { tutorialFinish(true); }
+
+// the login page's text for this install (also on the panel's 账号 tab)
+const char* loginHelpText();
+static const char* loginPageText() { return loginHelpText(); }
+const char* loginHelpText() {
+    static char b[900];
+#if defined(__APPLE__)
+    if (accountModLogin()) {
+        snprintf(b, sizeof b,
+                 T("你的安装包名是 %s，是签名工具改的（免费 Apple ID 签名都会改）。游戏自带的 TapTap 登录会检查包名，所以会失败：-101 sdk_not_matched。\n\n"
+                   "PhiMe 已接管账号页的「登录」：改用 TapTap 扫码登录，之后同步、自动同步都是游戏原本的。\n"
+                   "想用游戏自带的登录：用巨魔 TrollStore，或带通配描述文件的证书重新签名，保留原包名。",
+                   "This install's bundle ID is %s: the signing tool changed it (free Apple ID signing always does). The game's "
+                   "TapTap login checks it and fails: -101 sdk_not_matched.\n\nSo PhiMe runs 登录 on the account page as a TapTap QR "
+                   "login; sync and auto sync are then the game's own.\nFor the game's own login, sign with TrollStore or a "
+                   "certificate with a wildcard profile, keeping the original ID."),
+                 accountBundleId());
+    } else {
+        snprintf(b, sizeof b, "%s",
+                 T("你的安装保留了原版包名 games.Pigeon.Phigros（比如巨魔 TrollStore，或带通配描述文件的证书签名）。\n\n"
+                   "直接用游戏自带的登录就好：账号页点「登录」，跳到 TapTap 授权后回来。PhiMe 不插手登录。\n\n"
+                   "以后如果换成免费 Apple ID 签名（包名会被改），PhiMe 会自动改用扫码登录。",
+                   "This install kept the official bundle ID games.Pigeon.Phigros (TrollStore, or a certificate with a wildcard "
+                   "profile).\n\nUse the game's own login: 登录 on the account page, authorize in TapTap, come back. PhiMe stays out "
+                   "of it.\n\nIf you later sign with a free Apple ID (which changes the ID), PhiMe switches to the QR login by itself."));
+    }
+#else
+    snprintf(b, sizeof b, "%s",
+             T("这个安装包为了装 PhiMe 重新签过名，游戏原本的 TapTap 登录会检查签名并拒绝（signature not match）。\n\n"
+               "PhiMe 已接管账号页的「登录」：用另一台设备上的 TapTap 扫码，或在本机用 TapTap / 浏览器打开链接确认，拿到凭证交给游戏。"
+               "之后同步、自动同步和冲突提醒都是游戏原本的。凭证只存在本机。",
+               "This APK is re-signed for PhiMe, and the game's TapTap login refuses a changed signature (signature not match).\n\n"
+               "So PhiMe runs 登录 on the account page: scan with TapTap on another device, or open the link in TapTap / a browser on "
+               "this phone. The token goes to the game; sync, auto sync and conflict warnings are then the game's own. The token stays "
+               "on this phone."));
+#endif
+    return b;
+}
+
+static void showPage() {
+    static const char* const titles[2][kPages] = {
+        {"欢迎使用 PhiMe", "选歌界面", "练习模式", "显示和皮肤", "登录和云存档", "最后几句"},
+        {"Welcome to PhiMe", "Song select", "Practice mode", "Display and skins", "Login and cloud save", "A few last tips"}};
+    char title[96];
+    snprintf(title, sizeof title, "%s  %d/%d", titles[langEn() ? 1 : 0][g_page], g_page + 1, kPages);
+    const char* body = "";
+    switch (g_page) {
+    case 0:
+        body = T("PhiMe 是 Phigros 的非官方 Mod，免费开源、禁止商用：花钱买到的，那你被骗了！它不改判定和分数，只帮你练习、推分和换皮肤。\n\n"
+                 "设置入口：游戏「设置」里的「PhiMe 小助手」，选歌界面也有一个。\n\n"
+                 "这份引导以后在「小助手 → 关于 → 新手引导」还能再看。",
+                 "PhiMe is an unofficial Phigros mod, free and open source, no commercial use: if you paid for it, you were scammed! "
+                 "It never changes judgements or scores; it helps you practise, push your scores and change skins.\n\n"
+                 "Settings: PhiMe Assistant in the game's Settings; song select has an entry too.\n\n"
+                 "You can read this guide again under Assistant → About → Guide.");
+        break;
+    case 1:
+        body = T("封面下方多了一排按钮：\n"
+                 "· 镜像：谱面左右翻转\n"
+                 "· 练习：进歌后打开选段练习，成绩不保存\n"
+                 "· 自动：Clawd 帮你打，成绩不保存\n"
+                 "· 普通 / 课题：课题模式的判定和计分，记录只存本机\n"
+                 "· 详情：判定数和 4 位小数准度\n\n"
+                 "小助手「游玩」页里还有 B30 成绩：Best 27 + Phi 3 和每张谱面的推分准度。",
+                 "A row of buttons under the cover:\n"
+                 "· Mirror: the chart flipped left-right\n"
+                 "· Practice: opens the section editor in the song, nothing saved\n"
+                 "· Auto: Clawd plays for you, nothing saved\n"
+                 "· Normal / Course: course-mode judging and scoring, records on this device\n"
+                 "· Details: judgement counts and 4-decimal accuracy\n\n"
+                 "The Assistant's Play page has Best 30: Best 27 + Phi 3 and the accuracy each chart needs for +0.01.");
+        break;
+    case 2:
+        body = T("开着「练习」进歌会打开选段面板：拖 A / B 两个把手选一段，双指缩放时间轴。\n"
+                 "· 速度 0.05x～2x，可以开「变速不变调」\n"
+                 "· 流速：慢速时音符会飞得很慢，把流速拉到「抵消」标记，看起来就和原速一样\n"
+                 "· AB 循环：一段反复练\n\n"
+                 "暂停时屏幕下方的「选段练习」随时回到面板。",
+                 "With Practice on, a song opens the section editor: drag the A / B handles, pinch to zoom the timeline.\n"
+                 "· Speed 0.05x–2x, optionally keeping the pitch\n"
+                 "· Flow: at low speed notes crawl; put Flow on the 1:1 mark and they look as fast as at full speed\n"
+                 "· A-B loop: repeat one part\n\n"
+                 "While paused, Sections at the bottom of the screen brings the editor back.");
+        break;
+    case 3:
+        body = T("「显示」页：准度显示、判定详情、上隐条，还能隐藏分数和连击。\n"
+                 "「其他」页：区分大小 P（±40 ms 金色特效）、正解音、快速加载、语言。\n"
+                 "「皮肤」页：导入 Phira 格式的皮肤包（zip），音符、打击特效和打击音都会换，三种音效可以分别调音量。\n\n"
+                 "继续前回放、开头 / 结尾的 SKIP 在打歌时自动出现。",
+                 "Display: accuracy line, judgement counts, the top hide bar, hiding score and combo.\n"
+                 "Other: Critical Perfect (±40 ms, gold effect), on-time hit sounds, fast loading, language.\n"
+                 "Skins: import Phira skin packs (zip): notes, hit effects and hit sounds, each sound with its own volume.\n\n"
+                 "Replay before resuming and the intro / ending SKIP show up by themselves while playing.");
+        break;
+    case 4:
+        body = loginPageText();
+        break;
+    default:
+        body = T("· 卸载官方版前，先在官方版里同步一次云存档，装好后登录再同步回来\n"
+                 "· 现在不登录也没关系：小助手的「账号」页随时可以登录，也能看到这个安装该用哪种登录\n"
+                 "· 遇到问题：把 Mod 文件夹里的 PhiMeMod-least.log 发给作者（「关于」页点「打开」），再说说在哪一步出的问题\n"
+                 "· 练习、自动和课题的成绩都不会写进游戏记录\n\n"
+                 "请支持正版，支持鸽游～",
+                 "· Before uninstalling the official game, sync its cloud save; log in here and sync it back\n"
+                 "· No need to log in now: the Assistant's Account tab logs in any time and shows which login this install uses\n"
+                 "· Problems: send the author PhiMeMod-least.log from the mod folder (About → Open) and say what you were doing\n"
+                 "· Practice, autoplay and course runs never reach the game's records\n\n"
+                 "Please support the official game!");
+        break;
+    }
+    SaveDialog d = {};
+    d.title = title;
+    d.body = body;
+    d.modal = true;
+    // as tall as the text needs (the card's header and buttons take ~230), at most the screen
+    float h = textHeight(body, 22, false, 760 - 2 * 44) + 116 + 120;
+    float maxH = canvasH() - 90;
+    d.height = h < 470 ? 470 : h > maxH ? maxH : h;
+    bool last = g_page == kPages - 1;
+    if (last && needModLogin()) {
+        d.ok = T("现在登录", "Log in now");
+        d.onOk = pageLogin;
+        d.extra = T("以后再说", "Later");
+        d.onExtra = pageSkip;
+    } else {
+        d.ok = last ? T("开始玩吧", "Let's play") : T("下一步", "Next");
+        d.onOk = pageNext;
+        if (!last) {
+            d.extra = T("跳过", "Skip");
+            d.onExtra = pageSkip;
+        }
+    }
+    if (g_page > 0) {
+        d.cancel = T("上一步", "Back");
+        d.onCancel = pagePrev;
+    }
+    saveDialog(d);
 }
 static void showWelcome() {
-    dialog(T("欢迎使用 PhiMe 小助手", "Welcome to PhiMe Assistant"),
-           T("设置入口：游戏的「设置」→「PhiMe 小助手」，选歌界面也有一个。\n\n"
-             "PhiMe 免费开源，禁止商用：如果你是花钱买到的，那你被骗了！它不改判定和分数，只帮你练习和推分。"
-             "请支持正版，支持鸽游～",
-             "Settings: the game's Settings → PhiMe Assistant; song select has an entry too.\n\n"
-             "PhiMe is free and open source, no commercial use: if you paid for it, you were scammed! It never "
-             "changes judgements or scores; it only helps you practise. Please support the official game!"),
-           nullptr, nullptr, T("好", "OK"), welcomeOk, true);
-    LOG("savedata: first-run welcome shown");
+    g_page = 0;
+    showPage();
+    LOG("savedata: first-run guide shown (login: %s, bundle ID %s)", accountModLogin() ? "PhiMe's QR login" : "the game's own",
+        accountBundleId());
 }
+void tutorialOpen() {
+    onEveryFrame(savedataFrame);
+    g_page = 0;
+    showPage();
+}
+static bool wantTutorial() { return prefGetInt("PhiMeMod.tutorial", 0) < kTutorialVersion; }
 
-// ======================= Android: how to log in (once, after the welcome) =======================
-// The re-signed APK can't use the game's TapTap login; PhiMe's QR login hands the game's SDK a token instead, and
-// from then on the game's own sync runs (account.cpp).
-static void guideDone() {
+// ---- the login reminder (once): users who finished an older guide but use PhiMe's login and are not logged in ----
+static void guideLater() {
     prefSetInt("PhiMeMod.loginGuide", 1);
     prefSave();
-}
-static void guideLater() {
-    guideDone();
     LOG("savedata: login guide -> later");
 }
 static void guideLogin() {
-    guideDone();
-    LOG("savedata: login guide -> log in now");
-    if (!accountLoginNow())
-        saveMessage(T("没能开始登录", "Could not start the login"),
-                    T("PhiMe 的 Java 部分没有加载（需要 Android 8 以上），或者游戏的登录组件没找到。日志里 account: 开头的行有原因。",
-                      "PhiMe's Java side did not load (needs Android 8+), or the game's login was not found. See the log lines starting with account:."));
+    guideLater();
+    loginNow();
 }
-static bool wantGuide() {
-#if defined(__APPLE__)
-    return false;
-#else
-    return prefGetInt("PhiMeMod.loginGuide", 0) == 0 && cloudAvailable() && !accountLoggedIn();
-#endif
-}
+static bool wantGuide() { return prefGetInt("PhiMeMod.loginGuide", 0) == 0 && needModLogin(); }
 static void showGuide() {
-    dialog(T("登录 TapTap 账号", "Log in to TapTap"),
-           T("这个安装包为了装 PhiMe 重新签过名，TapTap 登录会检查签名并拒绝（signature not match），所以游戏原本的登录用不了。\n\n"
-             "PhiMe 改用 TapTap 扫码拿凭证，交给游戏自己的登录；之后同步、自动同步和冲突提醒都是游戏原本的逻辑。\n\n"
-             "以后也能在账号页点「登录」，凭证只存在本机。",
-             "PhiMe's APK is re-signed, and TapTap's login refuses a changed signature, so the game's own login fails.\n\n"
-             "PhiMe logs in with a TapTap QR code and hands the token to the game; sync, auto sync and conflict "
-             "warnings are then the game's own.\n\nLater: Log in on the account page. The token stays on this phone."),
-           T("以后再说", "Later"), guideLater, T("现在登录", "Log in now"), guideLogin, true);
+    dialog(T("登录 TapTap 账号", "Log in to TapTap"), loginPageText(), T("以后再说", "Later"), guideLater,
+           T("现在登录", "Log in now"), guideLogin, true);
     LOG("savedata: login guide shown");
 }
 
@@ -512,16 +693,16 @@ static void savedataFrame(void*) {
     cloudPoll();
     if (g_welcomeAt >= 0 && timeSinceLevelLoad() >= g_welcomeAt) {
         g_welcomeAt = -1;
-        if (prefGetInt("PhiMeMod.welcomed", 0) == 0) showWelcome();
-        else if (!saveDialogOpen() && wantGuide()) showGuide();
+        if (saveDialogOpen()) return;
+        if (wantTutorial()) showWelcome();
+        else if (wantGuide()) showGuide();
     }
 }
 
 static void hk_CS_Start(Obj* self, const MethodInfo* m) {
     orig_CS_Start(self, m);
     onEveryFrame(savedataFrame);
-    bool welcome = prefGetInt("PhiMeMod.welcomed", 0) == 0;
-    if ((welcome || wantGuide()) && g_welcomeAt < 0) g_welcomeAt = timeSinceLevelLoad() + 0.8f;
+    if ((wantTutorial() || wantGuide()) && g_welcomeAt < 0) g_welcomeAt = timeSinceLevelLoad() + 0.8f;
 }
 
 // ======================= install =======================

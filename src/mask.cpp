@@ -239,6 +239,7 @@ static void maskFrame(void*) {
     if (g_preview) previewFrame(pc);
     Obj* sr = (Obj*)g_band.get();
     if (!alive(sr)) return;
+    PerfScope ps(PF_MASK);
     Obj* jc = fld<Obj*>(pc, M.pcJc);
     if (!g_lines && alive(jc)) collectTimes(jc);
     Obj* cam = callm<Obj*>(M.camMain);
@@ -261,10 +262,11 @@ static void maskFrame(void*) {
     for (int k = 0; k < 4 && alive(num) && !covered; k++) {
         Obj** e = nullptr;
         int n = M.numLists[k] >= 0 ? listView(fld<Obj*>(num, M.numLists[k]), &e) : 0;
+        int off = -2;  // the note field's offset, once per list (each list holds one note type)
         for (int i = 0; i < n && !covered; i++) {
             Obj* c = e[i];
             if (!c) continue;
-            int off = infoOffset(c);
+            if (off == -2) off = infoOffset(c);
             Obj* note = off >= 0 ? fld<Obj*>(c, off) : nullptr;
             if (!note) continue;
             float dt = fld<float>(note, M.noteTime) - now;

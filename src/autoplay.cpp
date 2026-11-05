@@ -31,6 +31,11 @@ void configLoad() {
     g_cfg.accMode = prefGetInt("PhiMeMod.accMode", 0) == 1 ? 1 : 0;
     g_cfg.accSwap = prefGetInt("PhiMeMod.accSwap", 0) != 0;
     g_cfg.judgeShow = prefGetInt("PhiMeMod.judgeShow", 0) != 0;
+    g_cfg.hideScore = prefGetInt("PhiMeMod.hideScore", 0) != 0;
+    {
+        int f = prefGetInt("PhiMeMod.practiceFlow", 100);
+        g_cfg.practiceFlow = f < 50 ? 50 : f > 2000 ? 2000 : f;
+    }
     g_cfg.fastLoad = prefGetInt("PhiMeMod.fastLoad", 1) != 0;
     g_cfg.critical = prefGetInt("PhiMeMod.critical", 0) != 0;
     g_cfg.course = prefGetInt("PhiMeMod.course", 0) != 0;
@@ -67,6 +72,8 @@ void configSave() {
     prefSetInt("PhiMeMod.accMode", g_cfg.accMode);
     prefSetInt("PhiMeMod.accSwap", g_cfg.accSwap ? 1 : 0);
     prefSetInt("PhiMeMod.judgeShow", g_cfg.judgeShow ? 1 : 0);
+    prefSetInt("PhiMeMod.hideScore", g_cfg.hideScore ? 1 : 0);
+    prefSetInt("PhiMeMod.practiceFlow", g_cfg.practiceFlow);
     prefSetInt("PhiMeMod.fastLoad", g_cfg.fastLoad ? 1 : 0);
     prefSetInt("PhiMeMod.critical", g_cfg.critical ? 1 : 0);
     prefSetInt("PhiMeMod.course", g_cfg.course ? 1 : 0);
@@ -222,7 +229,10 @@ static void hk_NUM_Update(Obj* self, const MethodInfo* m) {
         badgeTick();
     }
     // Critical mode runs the original itself (after autoplay set its flags), in one or two passes
-    if (!critRunNotes(self, orig_NUM_Update, m, !replay)) orig_NUM_Update(self, m);
+    if (!critRunNotes(self, orig_NUM_Update, m, !replay)) {
+        PerfScope ps(PF_GAME_NOTES);
+        orig_NUM_Update(self, m);
+    }
     if (replay) resumeAfterNotes();
     practiceTickFromUpdate();
 }

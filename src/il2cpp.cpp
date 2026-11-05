@@ -225,6 +225,25 @@ Il2CppObject* makeDelegate(Il2CppClass* delegateClass, NativeCallback cb, void* 
     return del;
 }
 
+// A delegate of a void type with 3 parameters (Application.LogCallback) that calls `fn` directly:
+// fn(target, a, b, c, MethodInfo*). The template must have 3 parameters too: IL2CPP picks how to call the target
+// (closed / open instance) by comparing the target method's parameter count with the delegate's.
+Il2CppObject* makeDelegate3(Il2CppClass* delegateClass, void* fn) {
+    static const MethodInfo* tmpl = nullptr;
+    if (!tmpl) tmpl = findMethod(findClass("UnityEngine", "Transform"), "Rotate", 3, IL2CPP_TYPE_R4);
+    const MethodInfo* ctor = delegateClass ? findMethod(delegateClass, ".ctor", 2) : nullptr;
+    if (!ctor || !tmpl) return nullptr;
+    char* mem = (char*)calloc(1, PM_METHODINFO_SIZE + 16);  // intentionally never freed
+    memcpy(mem, tmpl, PM_METHODINFO_SIZE);
+    MethodInfo* fake = (MethodInfo*)mem;
+    fake->methodPointer = fn;
+    fake->virtualMethodPointer = fn;
+    Il2CppObject* del = il2cpp_object_new(delegateClass);
+    Il2CppObject* target = (Il2CppObject*)il2cpp_string_new("PhiMeMod");
+    callm<void>(ctor, del, target, (intptr_t)fake);
+    return del;
+}
+
 // Find the icall cache slot in a wrapper like:
 //   adrp x19, page ; [add x19, x19, #lo] ; ldr x2, [x19, #off] ; cbz x2, resolve ; br x2
 static void** decodeIcallSlot(const void* fn) {

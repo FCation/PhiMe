@@ -251,18 +251,18 @@ void errorTests() {
     { Mini m; m.items[1].method = 12; m.run(SKE_ZIP_UNSUPPORTED, "method 12"); }
     { Mini m; zip(z, m.items + 1, m.count - 1); expect(z, SKE_NO_INFO, "missing info.yml"); }
     { Mini m; m.items[4] = m.items[5]; --m.count; m.run(SKE_MISSING_FILE, "missing hold.png", "hold.png"); }
-    { Mini m; m.info("# comment\nhitFx: [5, 6\n"); m.run(SKE_INFO_SYNTAX, "unterminated list has line number", "line 2"); }
-    { Mini m; m.info("hitFx: [0, 6]\n"); m.run(SKE_INFO_VALUE, "hitFx out of range", "hitFx"); }
-    { Mini m; m.info("holdAtlas: [1000, 1500]\n"); m.run(SKE_BAD_IMAGE, "hold atlas exceeds PNG height", "hold.png"); }
+    { Mini m; m.info("# comment\nhitFx: [5, 6\n"); m.run(SKE_OK, "unterminated list skipped with line number", "line 2"); }
+    { Mini m; m.info("hitFx: [0, 6]\n"); m.run(SKE_OK, "hitFx out of range skipped", "hitFx"); }
+    { Mini m; m.info("holdAtlas: [1000, 1500]\n"); m.run(SKE_OK, "hold atlas taller than the PNG is shrunk", "hold.png"); }
     { Mini m; m.items[1] = textItem("click.png", "not PNG"); m.run(SKE_BAD_IMAGE, "bad PNG signature", "click.png"); }
-    { Mini m; m.items[m.count++] = textItem("click.ogg", "invalid sound"); m.run(SKE_BAD_SOUND, "bad Ogg signature", "click.ogg"); }
+    { Mini m; m.items[m.count++] = textItem("click.ogg", "invalid sound"); m.run(SKE_OK, "bad Ogg dropped, pack still loads", "click.ogg"); }
     { Mini m; m.items[1].raw = 1u << 30; m.run(SKE_TOO_BIG, "1 GiB declaration rejected before allocation"); }
     { Mini m; snprintf(m.items[0].name, 256, "../info.yml"); m.run(SKE_NO_INFO, "path traversal info ignored"); }
     { Mini m; snprintf(m.items[0].name, 256, "__MACOSX/info.yml"); m.run(SKE_NO_INFO, "Mac metadata ignored"); }
-    { Mini m; snprintf(m.items[0].name, 256, "a/b/info.yml"); m.run(SKE_NO_INFO, "two folder levels not matched"); }
+    { Mini m; for (int i = 0; i < m.count; ++i) { char n[256]; snprintf(n, 256, "a/b/%s", m.items[i].name); snprintf(m.items[i].name, 256, "%s", n); } m.run(SKE_OK, "pack two folder levels deep"); }
     { Mini m; snprintf(m.items[4].name, 256, "other/hold.png"); m.run(SKE_MISSING_FILE, "assets cannot come from another folder"); }
     { Mini m; m.items[0].raw = ~0u; m.run(SKE_ZIP_UNSUPPORTED, "ZIP64 size marker"); }
-    { Mini m; zip(z, m.items, m.count); set16(z.p + z.n - 14, 513); set16(z.p + z.n - 12, 513); expect(z, SKE_TOO_BIG, "entry count cap"); }
+    { Mini m; zip(z, m.items, m.count); set16(z.p + z.n - 14, 4097); set16(z.p + z.n - 12, 4097); expect(z, SKE_TOO_BIG, "entry count cap"); }
     { Mini m; for (int i = 1; i <= 4; ++i) m.items[i].raw = 25u * 1024 * 1024; m.run(SKE_TOO_BIG, "total needed size cap before allocation"); }
     { Mini m; zip(z, m.items, m.count); uint32_t cd = u32(z.p + z.n - 6); set32(z.p + cd + 42, z.n - 2); expect(z, SKE_ZIP_CORRUPT, "local header offset out of range"); }
     { Mini m; zip(z, m.items, m.count); set32(z.p + z.n - 6, z.n); expect(z, SKE_ZIP_CORRUPT, "central offset out of range"); }
@@ -271,8 +271,8 @@ void errorTests() {
       expect(z, SKE_ZIP_CORRUPT, "corrupt data descriptor"); }
     { Mini m; m.png[19] = 0; for (int i = 1; i < 6; ++i) m.items[i].checksum = crc(m.png, 33); m.run(SKE_BAD_IMAGE, "zero PNG width"); }
     { Mini m; m.info("hitFx: [64, 1]\n"); m.png[19] = 63; for (int i = 1; i < 6; ++i) m.items[i].checksum = crc(m.png, 33);
-      m.run(SKE_BAD_IMAGE, "hit FX grid exceeds image dimensions", "hit_fx.png"); }
-    { Mini m; m.items[m.count++] = item("hold_mh.png", m.png, 33); m.info("holdAtlasMH: [1000, 1000]\n"); m.run(SKE_BAD_IMAGE, "multi-highlight atlas height validation", "hold_mh.png"); }
+      m.run(SKE_OK, "hit FX grid larger than the image is shrunk", "hitFx grid"); }
+    { Mini m; m.items[m.count++] = item("hold_mh.png", m.png, 33); m.info("holdAtlasMH: [1000, 1000]\n"); m.run(SKE_OK, "multi-highlight atlas shrunk", "hold_mh.png"); }
     SkinPack p = {}; SkinResult r = {};
     bool ok = !skinPackLoad(nullptr, 64u * 1024 * 1024 + 1, &p, &r) && r.err == SKE_TOO_BIG;
     skinPackFree(&p); check(ok, "input size cap before reading memory");
@@ -303,14 +303,14 @@ void yamlTests() {
         "colorGood: 4294967296\n", "colorGood: 0x100000000\n", "colorGood: -1\n", "hitFxTinted: 1\n",
         "holdRepeat: 'true'\n", "name: [1, 2]\n", "author: true\n"
     };
-    for (const char* s : values) { Mini v; v.info(s); char name[128]; snprintf(name, sizeof(name), "YAML value rejection: %s", s); v.run(SKE_INFO_VALUE, name); }
+    for (const char* s : values) { Mini v; v.info(s); char name[128]; snprintf(name, sizeof(name), "YAML bad value tolerated: %s", s); v.run(SKE_OK, name); }
     const char* syntax[] = {
         "hitFx: [1, 2\n", "name: \"unterminated\n", "name: 'unterminated\n", "name: \"\\q\"\n",
         "name: \"\\uD800\"\n", "name: \"\\uDC00\"\n", "name: \"\\u0000\"\n", "name: \"x\" extra\n",
         "name: {a: b}\n", "name: |\n", " name: nested\n", "no colon\n", "unknown: [[1], 2]\n",
         "unknown: [1,]\n", "name: \xc0\xaf\n", "unknown: &alias x\n", "name@: value\n", "name: bad\rcarriage\n"
     };
-    for (const char* s : syntax) { Mini v; v.info(s); char name[128]; snprintf(name, sizeof(name), "YAML syntax rejection: %s", s); v.run(SKE_INFO_SYNTAX, name, "line 1"); }
+    for (const char* s : syntax) { Mini v; v.info(s); char name[128]; snprintf(name, sizeof(name), "YAML bad line skipped: %s", s); v.run(SKE_OK, name, "line 1"); }
     char longName[512]; memcpy(longName, "name: ", 6);
     for (int i = 0; i < 100; ++i) memcpy(longName + 6 + i * 3, "\xe4\xb8\xad", 3);
     longName[306] = '\n'; longName[307] = 0;
@@ -327,13 +327,39 @@ void soundAndInflateTests() {
     { Mini m; m.items[m.count++] = textItem("click.mp3", "ID3"); m.run(SKE_OK, "MP3 ID3 signature"); }
     { Mini m; const uint8_t sync[2] = {255,224}; m.items[m.count++] = item("click.mp3", sync, 2); m.run(SKE_OK, "MP3 MPEG sync"); }
     { Mini m; m.items[m.count++] = textItem("drag.wav", "RIFFabcdWAVE"); m.run(SKE_OK, "WAV RIFF WAVE signature"); }
-    { Mini m; m.items[m.count++] = textItem("click.wav", "RIFFabcdNOPE"); m.run(SKE_BAD_SOUND, "WAV requires WAVE", "click.wav"); }
+    { Mini m; m.items[m.count++] = textItem("click.wav", "RIFFabcdNOPE"); m.run(SKE_OK, "WAV without WAVE dropped", "click.wav"); }
     { Mini m; m.items[m.count++] = textItem("click.mp3", "bad"); m.items[m.count++] = textItem("click.wav", "bad");
       m.items[m.count++] = textItem("click.ogg", "OggS"); m.run(SKE_OK, "Ogg wins over earlier WAV and MP3"); }
     { Mini m; m.items[m.count++] = textItem("click.mp3", "bad"); m.items[m.count++] = textItem("click.wav", "RIFFabcdWAVE");
       m.run(SKE_OK, "WAV wins over earlier MP3"); }
     { Mini m; m.items[m.count++] = textItem("click.ogg", "bad"); m.items[m.count++] = textItem("click.wav", "RIFFabcdWAVE");
-      m.run(SKE_BAD_SOUND, "invalid preferred Ogg is reported", "click.ogg"); }
+      m.run(SKE_OK, "invalid preferred Ogg falls back to the WAV", "click.ogg");
+      Buffer z; zip(z, m.items, m.count); SkinPack p = {}; SkinResult r = {};
+      check(skinPackLoad(z.p, z.n, &p, &r) && p.files[SK_SND_CLICK].data && !memcmp(p.files[SK_SND_CLICK].data, "RIFF", 4), "fallback WAV kept"); skinPackFree(&p); }
+    { Mini m; m.items[m.count++] = textItem("click.ogg", "RIFFabcdWAVE");
+      Buffer z; zip(z, m.items, m.count); SkinPack p = {}; SkinResult r = {};
+      check(skinPackLoad(z.p, z.n, &p, &r) && p.files[SK_SND_CLICK].data && !r.detail[0], "WAV data named .ogg is kept (format by content)"); skinPackFree(&p); }
+    { Mini m; m.items[m.count++] = textItem("click.mp3", "ID3");
+      Buffer z; zip(z, m.items, m.count); SkinPack p = {}; SkinResult r = {};
+      check(skinPackLoad(z.p, z.n, &p, &r) && p.files[SK_SND_CLICK].data && !r.detail[0], "MP3 kept (decoded by audiodec)"); skinPackFree(&p); }
+    { Mini m; m.items[m.count++] = textItem("drag.flac", "fLaC....");
+      Buffer z; zip(z, m.items, m.count); SkinPack p = {}; SkinResult r = {};
+      check(skinPackLoad(z.p, z.n, &p, &r) && p.files[SK_SND_DRAG].data && !r.detail[0], "FLAC kept"); skinPackFree(&p); }
+    { Mini m; m.items[m.count++] = textItem("flick.mp3", "not audio at all");
+      Buffer z; zip(z, m.items, m.count); SkinPack p = {}; SkinResult r = {};
+      check(skinPackLoad(z.p, z.n, &p, &r) && !p.files[SK_SND_FLICK].data && strstr(r.detail, "flick.mp3"), "garbage .mp3 dropped with a note"); skinPackFree(&p); }
+    { Mini m; static const uint8_t jpg[] = {0xff,0xd8,0xff,0xe0,0,4,0,0,0xff,0xc0,0,11,8,0,100,3,0xe8,3,1,0x11,0,0xff,0xd9};
+      m.items[1] = item("click.png", jpg, sizeof jpg);
+      Buffer z; zip(z, m.items, m.count); SkinPack p = {}; SkinResult r = {};
+      check(skinPackLoad(z.p, z.n, &p, &r) && p.files[SK_CLICK].w == 1000 && p.files[SK_CLICK].h == 100, "JPEG named .png accepted with its size"); skinPackFree(&p); }
+    { Mini m; m.items[m.count++] = textItem("click_mh.png", "broken");
+      Buffer z; zip(z, m.items, m.count); SkinPack p = {}; SkinResult r = {};
+      check(skinPackLoad(z.p, z.n, &p, &r) && !p.files[SK_CLICK_MH].data && strstr(r.detail, "click_mh.png"), "broken optional _mh image dropped"); skinPackFree(&p); }
+    { Mini m; m.info("Hit_FX: ['5', 6.0]\ncolor_perfect: \"#ff0000\"\nColorGood: '#80112233'\nhitFxTinted: 'false'\n");
+      Buffer z; zip(z, m.items, m.count); SkinPack p = {}; SkinResult r = {};
+      bool ok = skinPackLoad(z.p, z.n, &p, &r);
+      check(ok && p.hitFxCols == 5 && p.hitFxRows == 6 && p.colorPerfect == 0xffff0000u && p.colorGood == 0x80112233u && !p.hitFxTinted && !r.detail[0],
+            "loose keys, quoted numbers and #RRGGBB colours"); skinPackFree(&p); }
     const char* text = "name: fixed Huffman\n";
     {
         Mini m; Writer w; w.put(1, 1); w.put(1, 2);

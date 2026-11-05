@@ -99,11 +99,129 @@ static void playGame(Obj* pc, bool play) {
     invokeSafe(P.pcPlay, pc, args);
 }
 
+// ---------------- flow speed ----------------
+// A note sits (note.floorPosition - its line's floor now) x note.speed x 0.6 screen heights from its line, and a
+// line's floor comes from its speed events (floorPosition + value x time). The game has no global flow setting
+// (1.1.0 tried LevelInformation.Speed: not a float field), so the chart itself is scaled: every speed event's value
+// and floorPosition, every note's floorPosition, and every hold's speed (a hold's speed is its body length) x k.
+// That is exactly a chart whose lines all move k times faster. Applied while a section runs, back to 1 otherwise.
+static int g_jlSpeedEv = -1, g_noteFloor = -1, g_noteSpeed = -1, g_noteType = -1;
+static int g_evFloor = -1, g_evValue = -1, g_evStride = 8, g_evAdj = 0;
+static bool g_evValueType = false;
+static Handle g_flowJc;          // the JudgeControl whose chart is scaled
+static float g_flowApplied = 1;  // its current factor
+// What was scaled, held by us: the game may keep the chart for the next play of the song after this level's
+// objects are gone, so the scale is always undone through these
+struct FlowLists {
+    Handle ev, above, below;
+};
+static FlowLists* g_fl = nullptr;
+static int g_flN = 0;
+static void flowForget() {
+    for (int i = 0; i < g_flN; i++) g_fl[i].ev.clear(), g_fl[i].above.clear(), g_fl[i].below.clear();
+    free(g_fl);
+    g_fl = nullptr;
+    g_flN = 0;
+}
+static void scaleEvents(Obj* evs, float f, int* count) {
+    if (!evs) return;
+    Il2CppArray* items;
+    int n;
+    const char* cn = il2cpp_class_get_name(il2cpp_object_get_class(evs));
+    size_t cl = strlen(cn);
+    if (cl > 2 && cn[cl - 2] == '[' && cn[cl - 1] == ']') {  // SpeedEvent[]
+        items = (Il2CppArray*)evs;
+        n = (int)items->max_length;
+    } else {  // List<SpeedEvent>
+        if (P.listItems < 0) return;
+        items = fld<Il2CppArray*>(evs, P.listItems);
+        n = fld<int>(evs, P.listSize);
+        if (!items || n <= 0 || (uintptr_t)n > items->max_length) return;
+    }
+    char* base = (char*)arrayData(items);
+    for (int i = 0; i < n; i++) {
+        char* e = g_evValueType ? base + (size_t)i * g_evStride - g_evAdj : ((char**)base)[i];
+        if (!e) continue;
+        fld<float>(e, g_evFloor) *= f;
+        fld<float>(e, g_evValue) *= f;
+        (*count)++;
+    }
+}
+static void flowRemember(Obj* jc) {
+    flowForget();
+    Obj** lines = nullptr;
+    int nl = listView(fld<Obj*>(jc, P.jcLines), &lines);
+    if (nl <= 0) return;
+    g_fl = (FlowLists*)calloc((size_t)nl, sizeof(FlowLists));
+    if (!g_fl) return;
+    for (int l = 0; l < nl; l++) {
+        if (!alive(lines[l])) continue;
+        g_fl[g_flN].ev.set(fld<Obj*>(lines[l], g_jlSpeedEv));
+        g_fl[g_flN].above.set(fld<Obj*>(lines[l], P.jlAbove));
+        g_fl[g_flN].below.set(fld<Obj*>(lines[l], P.jlBelow));
+        g_flN++;
+    }
+}
+static void scaleChart(float f) {
+    int evs = 0, notes = 0, holds = 0;
+    for (int l = 0; l < g_flN; l++) {
+        scaleEvents((Obj*)g_fl[l].ev.get(), f, &evs);
+        for (int side = 0; side < 2; side++) {
+            Obj** ns = nullptr;
+            int nn = listView((Obj*)(side ? g_fl[l].below : g_fl[l].above).get(), &ns);
+            for (int i = 0; i < nn; i++) {
+                Obj* note = ns[i];
+                if (!note) continue;
+                fld<float>(note, g_noteFloor) *= f;
+                if (fld<int>(note, g_noteType) == 3) {
+                    fld<float>(note, g_noteSpeed) *= f;
+                    holds++;
+                }
+                notes++;
+            }
+        }
+    }
+    static int logged = 0;
+    if (logged++ < 6) LOG("practice: chart flow x%.3f: %d lines, %d speed events, %d notes (%d holds)", f, g_flN, evs, notes, holds);
+}
+static bool flowReady() { return g_jlSpeedEv >= 0 && g_noteFloor >= 0 && g_noteSpeed >= 0 && g_noteType >= 0 && g_evFloor >= 0; }
+// back to the chart's own flow, even when the level is gone (never leave the chart scaled)
+static void flowRestore() {
+    if (g_flowApplied != 1) {
+        scaleChart(1 / g_flowApplied);
+        LOG("practice: chart flow back to x1");
+    }
+    flowForget();
+    g_flowJc.clear();
+    g_flowApplied = 1;
+}
+static void applyFlow(bool running) {
+    if (!flowReady()) return;
+    Obj* pc = (Obj*)g_pc.get();
+    Obj* jc = alive(pc) ? fld<Obj*>(pc, P.pcJc) : nullptr;
+    if (!alive(jc)) return;
+    if (jc != g_flowJc.get()) {  // a new level: its chart is at its own flow
+        flowRestore();
+        g_flowJc.set(jc);
+    }
+    float k = running && !maskPreviewActive() ? g_prac.flow : 1.f;
+    if (k == g_flowApplied) return;
+    if (!g_flN) flowRemember(jc);
+    scaleChart(k / g_flowApplied);
+    g_flowApplied = k;
+    // the lines rescan their speed events from the start (they only look forward)
+    Obj** lines = nullptr;
+    int nl = listView(fld<Obj*>(jc, P.jcLines), &lines);
+    for (int l = 0; l < nl; l++)
+        if (alive(lines[l])) fld<int>(lines[l], P.jlSpeedIdx) = 0;
+}
+
 static void applySpeed(bool running) {
     Obj* src = musicSource();
     float s = running ? g_prac.speed : 1.f;
     setPitch(src, s);
     pitch::setSpeed(running && g_prac.keepPitch ? s : 1.f);
+    applyFlow(running);
 }
 
 // ---------------- noise field (噪域) ----------------
@@ -325,6 +443,7 @@ static void startRun() {
     float pre = 1.0f * g_prac.speed;  // ~1 s of real time before the first note
     float t0 = g_prac.a - pre;
     if (t0 < 0) t0 = 0;
+    applyFlow(true);  // before the notes are made, in case the game reads it when it creates them
     reseed(t0, g_prac.a, g_prac.b);
     resetScore();
     seekAudio(t0);
@@ -416,6 +535,7 @@ void practicePauseToLeave() {
 
 void practiceSaveSettings() {
     g_cfg.practiceSpeed = (int)(g_prac.speed * 100 + 0.5f);
+    g_cfg.practiceFlow = (int)(g_prac.flow * 100 + 0.5f);
     g_cfg.practiceLoop = g_prac.loop;
     g_cfg.practiceKeepPitch = g_prac.keepPitch;
     configSave();
@@ -526,6 +646,7 @@ static void practiceFrame(void*) {
     if (!alive(pc)) {  // left the level
         g_prac.st = PR_OFF;
         g_pc.clear();
+        flowRestore();  // (if the level's LevelInformation outlives it)
         return;
     }
     PM_ONCE("practice: frame callback alive");
@@ -643,6 +764,7 @@ static void hk_Filter(Obj* self, Il2CppArray* data, int channels, const MethodIn
 // ---------------- level start ----------------
 void practiceLevelStart(Obj* pc) {
     configLoad();
+    flowRestore();
     g_prac.st = PR_OFF;
     g_btn.clear();
     g_filter.clear();
@@ -663,6 +785,7 @@ void practiceLevelStart(Obj* pc) {
     g_pc.set(pc);
     g_aas.set(aas);  // its AudioSource may not exist yet: musicSource() looks it up when needed
     g_prac.speed = g_cfg.practiceSpeed / 100.f;
+    g_prac.flow = g_cfg.practiceFlow / 100.f;
     g_prac.loop = g_cfg.practiceLoop;
     g_prac.keepPitch = g_cfg.practiceKeepPitch;
     pitch::setSpeed(1);
@@ -1250,6 +1373,22 @@ bool practiceInstall() {
         Il2CppClass* LI = findClass("", "LevelInformation");
         g_pcLevelInfo = fieldOffset(PC, "levelInformation");
         g_liOver = LI ? fieldOffset(LI, "levelOver") : -1;
+        // the note flow: the chart's speed events + note floor positions (see applyFlow)
+        g_jlSpeedEv = fieldOffset(JL, "speedEvents");
+        g_noteFloor = fieldOffset(Note, "floorPosition");
+        g_noteSpeed = fieldOffset(Note, "speed");
+        g_noteType = fieldOffset(Note, "type");
+        Il2CppClass* SE = findClass("", "SpeedEvent");
+        if (SE) {
+            g_evFloor = fieldOffset(SE, "floorPosition");
+            g_evValue = fieldOffset(SE, "value");
+            g_evValueType = il2cpp_class_is_valuetype(SE);
+            g_evAdj = g_evValueType ? (int)sizeof(Il2CppObject) : 0;
+            g_evStride = g_evValueType ? il2cpp_class_instance_size(SE) - (int)sizeof(Il2CppObject) : 8;
+            if (g_evValue < 0) g_evFloor = -1;
+        }
+        LOG("practice: flow speed %s (SpeedEvent %s)", flowReady() ? "on (chart scaling)" : "OFF (chart fields missing)",
+            SE ? (g_evValueType ? "struct" : "class") : "missing");
         LOG("practice: result screen guard %s (levelOver flag %s)", orig_LevelOverNext ? "on" : "MISSING",
             g_liOver >= 0 ? "found" : "missing");
     }

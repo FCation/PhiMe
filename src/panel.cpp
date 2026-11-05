@@ -53,7 +53,7 @@ static int g_rowCount = 0;
 static Handle g_root, g_card, g_dim, g_clawd, g_page, g_sub;
 static float g_openT = -1;  // opening animation progress, -1 = idle
 static float g_clawdT = 0;
-static int g_tab = 0;  // 0 游玩, 1 显示, 2 其他, 3 皮肤, 4 关于 (kept while the game runs)
+static int g_tab = 0;  // 0 游玩, 1 显示, 2 其他, 3 皮肤, 4 账号, 5 关于 (kept while the game runs)
 static void buildPage();
 static void pageBody(Obj* page, float& y);
 static void paintSub();
@@ -94,14 +94,14 @@ struct Seg {
     int* value;
     int n;
     void (*changed)();
-    Handle pill[5], label[5];
+    Handle pill[6], label[6];
 };
 struct SegOpt {
     Seg* seg;
     int i;
 };
 static Seg g_segs[2];  // 0 = tabs, 1 = accuracy mode
-static SegOpt g_segOpts[2][5];
+static SegOpt g_segOpts[2][6];
 static const int C_SEG_BG = 0xF0EEE6;
 
 static void paintSeg(Seg& s) {
@@ -123,7 +123,7 @@ static void onSeg(void* user) {
 }
 
 static void clearSeg(Seg& s) {
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 6; i++) {
         s.pill[i].clear();
         s.label[i].clear();
     }
@@ -509,6 +509,10 @@ static void aboutPage(Obj* page, float& y) {
     y -= 52 + 10;
     divider(page, y);
     y -= 10 + 52;
+    actionRow(page, y, T("新手引导", "Guide"), T("功能介绍，以及这个安装该怎么登录 TapTap", "What PhiMe does, and how this install logs in to TapTap"), nullptr, 0, T("查看", "Open"), SAVE_TUTORIAL);
+    y -= 52 + 10;
+    divider(page, y);
+    y -= 10 + 52;
     actionRow(page, y, T("开源协议", "License"), "CC BY-NC-SA 4.0", nullptr, 0, T("原文", "Read"), SAVE_LICENSE);
     y -= 52 + 10;
     termRow(page, y, T("署名", "Attribution"), T("转载、修改或再发布时，注明出自 PhiMe，并附上原项目的链接。", "Credit PhiMe and link the original project when you share or modify it."));
@@ -528,7 +532,49 @@ static void aboutPage(Obj* page, float& y) {
     divider(page, y);
     y -= 20;
     y -= para(page, y, T("如果鸽游认为 PhiMe 有任何不妥，作者会第一时间配合处理。", "If Pigeon Games finds anything about PhiMe inappropriate, the author will cooperate right away."), 19, C_MUTED) + 8;
-    y -= para(page, y, T("第三方代码：stb_vorbis、stb_truetype（Sean Barrett，公共领域 / MIT）。", "Third-party code: stb_vorbis, stb_truetype (Sean Barrett, public domain / MIT)."), 19, C_MUTED);
+    y -= para(page, y, T("第三方代码：stb_vorbis、stb_truetype（Sean Barrett，公共领域 / MIT）；dr_mp3、dr_flac（David Reid，公共领域 / MIT-0）。", "Third-party code: stb_vorbis, stb_truetype (Sean Barrett, public domain / MIT); dr_mp3, dr_flac (David Reid, public domain / MIT-0)."), 19, C_MUTED);
+}
+
+// ---- 账号: the TapTap login (PhiMe's QR login where the game's own one is refused) ----
+static void infoRow(Obj* page, float y, const char* label, const char* desc) {
+    Obj* row = newUI("row", page);
+    place(row, Vec2{0.5f, 0.5f}, Vec2{0.5f, 0.5f}, Vec2{0, y}, Vec2{kCardW - 2 * kPad, 104});
+    text(row, label, 27, rgb(C_TEXT), MiddleLeft, false, Vec2{0, 0.5f}, Vec2{0, 0.5f}, Vec2{0, 17}, Vec2{660, 40});
+    text(row, desc, 20, rgb(C_MUTED), MiddleLeft, false, Vec2{0, 0.5f}, Vec2{0, 0.5f}, Vec2{0, -19}, Vec2{700, 30});
+}
+static void accountPage(Obj* page, float& y) {
+    bool in = accountLoggedIn(), mod = accountModLogin();
+    const char* nick = accountNick();
+    char st[200];
+    if (in && nick[0]) snprintf(st, sizeof st, T("已登录：%s", "Logged in: %s"), nick);
+    else snprintf(st, sizeof st, "%s", in ? T("已登录", "Logged in") : T("未登录", "Not logged in"));
+    y -= 10 + 52;
+    if (!in && mod)
+        actionRow(page, y, st, T("登录后才能用游戏的云存档同步", "Needed for the game's cloud save sync"), nullptr, 0,
+                  T("登录", "Log in"), SAVE_LOGIN);
+    else if (!in)
+        infoRow(page, y, st, T("这个安装用游戏自带的登录：游戏「设置」里的账号页点「登录」", "This install uses the game's own login: 登录 on the game's account page"));
+    else
+        infoRow(page, y, st, T("同步：游戏「设置」里的账号页点「同步」；也可以打开自动同步", "Sync: 同步 on the game's account page, or turn on auto sync"));
+    y -= 52 + 10;
+    divider(page, y);
+    y -= 24;
+    char how[200];
+#if defined(__APPLE__)
+    if (mod) snprintf(how, sizeof how, T("登录方式：PhiMe 扫码登录（包名 %s）", "Login: PhiMe's QR login (bundle ID %s)"), accountBundleId());
+    else snprintf(how, sizeof how, "%s", T("登录方式：游戏自带的 TapTap 登录（原版包名）", "Login: the game's own TapTap login (official bundle ID)"));
+#else
+    snprintf(how, sizeof how, "%s", T("登录方式：PhiMe 扫码登录（安装包重签过名）", "Login: PhiMe's QR login (re-signed APK)"));
+#endif
+    y -= para(page, y, how, 23, C_TEXT, true) + 12;
+    y -= para(page, y, loginHelpText(), 20, C_BODY) + 24;
+    if (mod) {
+        divider(page, y);
+        y -= 10 + 52;
+        actionRow(page, y, T("保存的登录", "Saved login"), T("清除后下次登录要重新扫码，换账号时用", "Clear it to scan again, e.g. for another account"),
+                  nullptr, 0, T("清除", "Clear"), SAVE_FORGET_LOGIN);
+        y -= 52 + 10;
+    }
 }
 
 static void pageBody(Obj* page, float& y) {
@@ -537,10 +583,18 @@ static void pageBody(Obj* page, float& y) {
         return;
     }
     if (g_tab == 4) {
+        accountPage(page, y);
+        return;
+    }
+    if (g_tab == 5) {
         aboutPage(page, y);
         return;
     }
     if (g_tab == 0) {
+        y -= 10 + 52;
+        actionRow(page, y, T("B30 成绩", "Best 30"), T("Best 27 + Phi 3、单曲 RKS 和推分准度", "Best 27 + Phi 3, single RKS and the accuracy for +0.01"), nullptr, 0, T("查看", "Open"), SAVE_B30);
+        y -= 52 + 10;
+        divider(page, y);
         y -= 10 + 52;
         toggleRow(page, y, T("自动游玩", "Autoplay"), T("Clawd 帮你把所有音符打成 Perfect", "Clawd hits every note as a Perfect for you"), &g_cfg.autoplay);
         y -= 52 + 10;
@@ -597,6 +651,10 @@ static void pageBody(Obj* page, float& y) {
         y -= 52 + 10;
         divider(page, y);
         y -= 10 + 52;
+        toggleRow(page, y, T("隐藏分数和连击", "Hide score and combo"), T("打歌时不显示分数、准度、连击数和 COMBO 字样", "No score, accuracy, combo count or COMBO label while playing"), &g_cfg.hideScore);
+        y -= 52 + 10;
+        divider(page, y);
+        y -= 10 + 52;
         toggleRow(page, y, T("上隐条", "Top hide bar"), T("屏幕上方的黑色遮罩，只遮谱面；有音符的判定线进入时自动变透明", "A black band over the top of the chart; clears for judge lines with notes"), &g_cfg.maskOn);
         y -= 52 + 10 + 30;
         maskRow(page, y);
@@ -649,19 +707,20 @@ static void openPanel(void*) {
     y = g_top - 96;
     image(card, "divider", SPR_SOLID, rgb(C_LINE), Vec2{0.5f, 0.5f}, Vec2{0, y}, Vec2{g_cardW - 2 * kPad, 2});
 
-    const char* const tabs[] = {T("游玩", "Play"), T("显示", "Display"), T("其他", "Other"), T("皮肤", "Skins"), T("关于", "About")};
+    const char* const tabs[] = {T("游玩", "Play"),  T("显示", "Display"),  T("其他", "Other"),
+                                T("皮肤", "Skins"), T("账号", "Account"), T("关于", "About")};
     Obj* done;
     if (g_phone) {
         // sidebar: the tabs stacked, 完成 at the bottom, a hairline between it and the page
-        const float tw = kSideW - 52, th = 62, sx = kSideW / 2 + 10;
-        segmented(0, card, Vec2{0, 0.5f}, Vec2{sx, g_top - 96 - 22 - (5 * th + 8) / 2}, tw, th, tabs, 5, &g_tab, onTab,
+        const float tw = kSideW - 52, th = 60, sx = kSideW / 2 + 10;
+        segmented(0, card, Vec2{0, 0.5f}, Vec2{sx, g_top - 96 - 22 - (6 * th + 8) / 2}, tw, th, tabs, 6, &g_tab, onTab,
                   true);
         image(card, "sideLine", SPR_SOLID, rgb(C_LINE), Vec2{0, 0.5f}, Vec2{kSideW + 4, -36},
               Vec2{2, 2 * g_top - 96 - 24 - 40});
         done = image(card, "done", SPR_ROUND, rgb(C_CLAY), Vec2{0, 0}, Vec2{sx, 30 + 28}, Vec2{tw, 56}, 14, true);
     } else {
         // tab bar under the header, 完成 bottom right
-        segmented(0, card, Vec2{0, 0.5f}, Vec2{kPad + (5 * 128 + 8) / 2.f, kTop - 96 - kTabsH / 2 - 4}, 128, 44, tabs, 5,
+        segmented(0, card, Vec2{0, 0.5f}, Vec2{kPad + (6 * 120 + 8) / 2.f, kTop - 96 - kTabsH / 2 - 4}, 120, 44, tabs, 6,
                   &g_tab, onTab);
         done = image(card, "done", SPR_ROUND, rgb(C_CLAY), Vec2{1, 0}, Vec2{-kPad - 70, 30 + 28}, Vec2{140, 56}, 14,
                      true);

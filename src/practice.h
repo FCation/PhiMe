@@ -9,6 +9,7 @@ struct PracticeSession {
     float a = 0, b = 0;    // section, chart time (seconds)
     float songLen = 0;     // chart length (seconds)
     float speed = 1;       // 0.05 .. 2.0
+    float flow = 1;        // note flow speed 0.5 .. 20 (LevelInformation.Speed x this while a section runs)
     bool loop = false;
     bool keepPitch = true;
 };

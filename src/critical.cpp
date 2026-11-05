@@ -288,14 +288,25 @@ static void logColours(Obj* go, const char* when, int kind) {
 //           our copies pass through untouched (a hold with a plain-Perfect head keeps its orange)
 //   pass 2: only plain-Perfect taps run -> everything of the family becomes the orange copy
 static Obj* cloneInner(Obj* src);
+static uint64_t g_cloneOrigNs = 0;  // the game's own clone time inside this hook (not ours)
+static Obj* origClone(Obj* src) {
+    uint64_t t0 = perfNow();
+    Obj* c = o_clone(src);
+    g_cloneOrigNs += perfNow() - t0;
+    return c;
+}
 static Obj* hk_clone(Obj* src) {
+    uint64_t t0 = perfNow();
+    g_cloneOrigNs = 0;
     Obj* c = cloneInner(src);
     uiFadeOnClone(src, c);  // the game's scene wipe goes above our canvases
+    uint64_t total = perfNow() - t0;
+    perfAdd(PF_CLONE, total > g_cloneOrigNs ? total - g_cloneOrigNs : 0);
     return c;
 }
 static Obj* cloneInner(Obj* src) {
     if (skinActive()) {  // a skin replaces the hit effects (Critical is off then)
-        Obj* c = o_clone(src);
+        Obj* c = origClone(src);
         skinOnClone(src, c);
         return c;
     }
@@ -306,7 +317,7 @@ static Obj* cloneInner(Obj* src) {
         else if (src == t->prefab.get()) want = (Obj*)t->crit.get();
         if (want && alive(want)) src = want;
     }
-    Obj* c = o_clone(src);
+    Obj* c = origClone(src);
     if (t && c) {
         int kind = src == t->perf.get() ? 2 : src == t->crit.get() ? 1 : 0;
         int same = 0;
@@ -377,8 +388,48 @@ static float absf(float v) { return v < 0 ? -v : v; }
 
 static void paintLines(Obj* pc, Obj* sc, const Color* apFc = nullptr);
 
+// Pass 2 runs the game's update over the held-back taps only: for the call, the click list's backing array is a
+// small one holding just them (the other lists are emptied), and whatever the game removed from it (judged taps
+// are destroyed and removed in the same update) is then removed from the real list too. 1.2.0 and older ran it
+// over every tap of the chart: the whole note update twice on every frame with a plain Perfect.
+static Handle g_p2Arr;
+static int g_listVersion = -2;
+static Il2CppArray* pass2Array(Il2CppArray* real) {
+    if (!real) return nullptr;
+    Il2CppArray* a = (Il2CppArray*)g_p2Arr.get();
+    if (a) return a;
+    static bool tried = false;
+    if (tried) return nullptr;
+    tried = true;
+    Il2CppClass* k = il2cpp_object_get_class((Il2CppObject*)real);
+    Il2CppClass* cc = findClass("", "ClickControl");
+    if (!cc || strcmp(il2cpp_class_get_name(k), "ClickControl[]") != 0) {
+        LOG("critical: click list holds %s, the second pass keeps using the whole list", il2cpp_class_get_name(k));
+        return nullptr;
+    }
+    a = newArray(cc, 64);
+    if (a) g_p2Arr.set(a);
+    LOG("critical: second pass on the held-back taps only %s", a ? "on" : "OFF (no array)");
+    return a;
+}
+static void removeFromList(Obj* list, Obj* item) {
+    Obj** items;
+    int n;
+    if (!listOf(list, &items, &n)) return;
+    for (int i = 0; i < n; i++) {
+        if (items[i] != item) continue;
+        for (int j = i; j + 1 < n; j++) items[j] = items[j + 1];
+        items[n - 1] = nullptr;
+        fld<int>(list, C.listSize) = n - 1;
+        if (g_listVersion == -2) g_listVersion = fieldOffset(il2cpp_object_get_class(list), "_version");
+        if (g_listVersion >= 0) fld<int>(list, g_listVersion)++;
+        return;
+    }
+}
+
 bool critRunNotes(Obj* num, void (*orig)(Obj*, const MethodInfo*), const MethodInfo* m, bool counting) {
     if (!C.ok) return false;  // Criticals are always counted; 区分大小 P only decides whether they are shown
+    uint64_t tStart = perfNow(), tOrig = 0;
     bool show = critEnabled();
     Obj* pc = fld<Obj*>(num, C.numPC);
     Obj* sc = pc ? fld<Obj*>(pc, C.pcScore) : nullptr;
@@ -395,8 +446,9 @@ bool critRunNotes(Obj* num, void (*orig)(Obj*, const MethodInfo*), const MethodI
     Obj* base = (Obj*)g_basePrefab.get();
     float now = fld<float>(pc, C.pcNow), pr = perfectRange();
 
-    // taps that will be a plain Perfect in this update: hold them back for pass 2
-    int held = 0;
+    // taps that will be a plain Perfect in this update: hold them back for pass 2 (shown), or just count them (not
+    // shown: no second pass at all, the effect is the game's own anyway)
+    int held = 0, plainTaps = 0;
     Obj** items;
     int n;
     if (listOf(fld<Obj*>(num, C.numLists[0]), &items, &n))
@@ -421,6 +473,10 @@ bool critRunNotes(Obj* num, void (*orig)(Obj*, const MethodInfo*), const MethodI
                     t <= kCritWindow ? "Critical" : t < pr ? "Perfect" : "Good / Bad");
             }
             if (t <= kCritWindow || t >= pr) continue;  // Critical (pass 1) / Good, Bad (pass 1)
+            if (!show) {
+                plainTaps++;
+                continue;
+            }
             g_held[held++] = Held{cc, note, a, b};
             fld<bool>(cc, C.ccJudged) = false;
             fld<bool>(note, C.noteJudged) = false;
@@ -448,7 +504,11 @@ bool critRunNotes(Obj* num, void (*orig)(Obj*, const MethodInfo*), const MethodI
     Obj* critFx = show ? effectFor(base, true) : nullptr;
     if (alive(critFx)) fld<Obj*>(sc, C.scPrefab) = critFx;
     g_fxMode = 1;
+    uint64_t o0 = perfNow();
     orig(num, m);
+    uint64_t o1 = perfNow();
+    perfAdd(PF_GAME_NOTES, o1 - o0);
+    tOrig += o1 - o0;
     g_fxMode = 0;
     int p1 = fld<int>(sc, C.scPerfect);
     int plainHolds = 0;
@@ -476,9 +536,39 @@ bool critRunNotes(Obj* num, void (*orig)(Obj*, const MethodInfo*), const MethodI
             if (listOf(lists[k], &dummy, &sizes[k])) fld<int>(lists[k], C.listSize) = 0;
             else lists[k] = nullptr;
         }
+        // the click list: just the held-back taps
+        Obj* click = fld<Obj*>(num, C.numLists[0]);
+        Il2CppArray* realItems = click && C.listItems >= 0 ? fld<Il2CppArray*>(click, C.listItems) : nullptr;
+        int realSize = click && C.listSize >= 0 ? fld<int>(click, C.listSize) : 0;
+        Il2CppArray* tmp = pass2Array(realItems);
+        if (tmp) {
+            for (int i = 0; i < held; i++) arrayData(tmp)[i] = g_held[i].cc;
+            fld<Il2CppArray*>(click, C.listItems) = tmp;
+            fld<int>(click, C.listSize) = held;
+        }
         g_fxMode = 2;
+        uint64_t o2 = perfNow();
         orig(num, m);
+        uint64_t o3 = perfNow();
+        perfAdd(PF_PASS2, o3 - o2);
+        tOrig += o3 - o2;
         g_fxMode = 0;
+        if (tmp) {
+            // what the game took out of the small list (judged, destroyed) leaves the real one too
+            Il2CppArray* nowItems = fld<Il2CppArray*>(click, C.listItems);
+            int left = fld<int>(click, C.listSize);
+            Obj** rest = nowItems ? (Obj**)arrayData(nowItems) : nullptr;
+            if (!rest || left < 0 || (uintptr_t)left > nowItems->max_length) left = 0;
+            fld<Il2CppArray*>(click, C.listItems) = realItems;
+            fld<int>(click, C.listSize) = realSize;
+            for (int i = 0; i < held; i++) {
+                bool still = false;
+                for (int j = 0; j < left && !still; j++) still = rest[j] == g_held[i].cc;
+                if (!still) removeFromList(click, g_held[i].cc);
+            }
+            for (int i = 0; i < 64; i++) arrayData(tmp)[i] = nullptr;  // no references kept
+            if (nowItems != tmp) LOG("critical: the game replaced the click list during the second pass (handled)");
+        }
         for (int k = 0; k < 3; k++)
             if (lists[k]) fld<int>(lists[k], C.listSize) = sizes[k];
         if (counting) {
@@ -489,7 +579,7 @@ bool critRunNotes(Obj* num, void (*orig)(Obj*, const MethodInfo*), const MethodI
     }
     if (alive(base)) fld<Obj*>(sc, C.scPrefab) = base;
     if (counting) {
-        int d = p1 - p0 - plainHolds;
+        int d = p1 - p0 - plainHolds - plainTaps;  // (shown: the plain taps were scored in pass 2 instead)
         if (d > 0) g_crit += d;
     }
     int perfect = fld<int>(sc, C.scPerfect);
@@ -507,6 +597,8 @@ bool critRunNotes(Obj* num, void (*orig)(Obj*, const MethodInfo*), const MethodI
     if (show) paintLines(pc, sc);
     else if (skinLineColors(skinLine)) paintLines(pc, sc, skinLine);  // a skin's colorPerfect (AP) / colorGood (FC)
     watchTick();
+    uint64_t total = perfNow() - tStart;
+    perfAdd(PF_CRIT, total > tOrig ? total - tOrig : 0);
     return true;
 }
 
@@ -529,7 +621,8 @@ static void paintLines(Obj* pc, Obj* sc, const Color* apFc) {
         Obj* sr = fld<Obj*>(jl, C.jlRenderer);
         if (!sr) continue;
         Color cur = callm<Color>(C.srGetColor, sr);
-        callm<void>(C.srSetColor, sr, Color{c.r, c.g, c.b, cur.a});
+        if (cur.r != c.r || cur.g != c.g || cur.b != c.b)  // only when the game changed it back
+            callm<void>(C.srSetColor, sr, Color{c.r, c.g, c.b, cur.a});
     }
 }
 

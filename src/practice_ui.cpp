@@ -2,7 +2,8 @@
 //   two fingers: zoom around the pinch centre     one finger on an end point: drag it
 //   one finger elsewhere on the timeline: pan     while dragging an end point the backdrop turns clear and
 //   the chart jumps to that time so you can see where you are.
-// Plus a speed slider (0.05x - 2x, step 0.05), AB-loop and keep-pitch switches, 取消 / 开始练习.
+// Plus a speed slider (0.05x - 2x, step 0.05), a note flow slider (0.5x - 20x, logarithmic, with a mark where
+// flow x speed = 1 that the knob snaps to), AB-loop and keep-pitch switches, 取消 / 开始练习.
 #include "practice.h"
 
 using namespace il2cpp;
@@ -11,17 +12,18 @@ using namespace unity;
 static const int C_CLAY = 0xD97757, C_IVORY = 0xFAF9F5, C_LINE = 0xE8E6DC, C_TEXT = 0x141413, C_MUTED = 0x87867F,
                  C_TRACK = 0xEDEBE3, C_TRACK_OFF = 0xE3E1D7;
 
-static const float kSheetH = 430, kMargin = 24, kTimelineH = 96, kMinSpan = 1.0f;
+static const float kSheetH = 540, kMargin = 24, kTimelineH = 96, kMinSpan = 1.0f;
 static const int kTicks = 9;
 
 static Handle g_root, g_dim, g_sel, g_hA, g_hB, g_readout, g_speedFill, g_speedKnob, g_speedText;
+static Handle g_flowFill, g_flowKnob, g_flowText, g_flowMark;
 static Handle g_tick[kTicks], g_tickLbl[kTicks];
 static Handle g_loopTrack, g_loopKnob, g_pitchTrack, g_pitchKnob;
 static float g_S = 1700, g_TW = 1620, g_SW = 800;  // sheet width, timeline width, speed slider width
 static float g_vs = 0, g_ve = 1;                    // visible window (seconds)
 static bool g_open = false;
 
-enum Gesture { G_NONE, G_DRAG_A, G_DRAG_B, G_PAN, G_PINCH, G_SPEED };
+enum Gesture { G_NONE, G_DRAG_A, G_DRAG_B, G_PAN, G_PINCH, G_SPEED, G_FLOW };
 static Gesture g_gesture = G_NONE;
 static float g_panX0, g_panVs0, g_pinchD0, g_pinchSpan0, g_pinchAnchorT, g_pinchAnchorX;
 static float g_previewedT = -1;
@@ -38,6 +40,7 @@ static float tlLeft() { return -g_S / 2 + 40; }
 static float tlY() { return sheetTop() - 140; }
 static float spLeft() { return -g_S / 2 + 230; }
 static float spY() { return sheetTop() - 270; }
+static float flY() { return sheetTop() - 370; }
 static Vec2 toCanvas(Vec2 px) { return screenToCanvas(px); }
 static float xAt(float t) { return (t - g_vs) / (g_ve - g_vs) * g_TW; }  // timeline-local x
 static float timeAt(float localX) { return g_vs + localX / g_TW * (g_ve - g_vs); }
@@ -58,7 +61,66 @@ static void paintSwitch(Handle& track, Handle& knob, bool on) {
     setPos(rt(kn), Vec2{on ? 15.f : -15.f, 0});
 }
 
+// ---------- flow slider: 0.5x .. 20x on a log scale (20x is 40 times 0.5x) ----------
+static const float kFlowMin = 0.5f, kFlowMax = 20.f;
+static float expS(float x) {  // e^x for the slider's range (|x| < 10): x = n ln2 + r, series for e^r
+    const float ln2 = 0.69314718f;
+    int n = (int)(x / ln2 + (x >= 0 ? 0.5f : -0.5f));
+    float r = x - n * ln2, term = 1, sum = 1;
+    for (int i = 1; i < 9; i++) {
+        term *= r / i;
+        sum += term;
+    }
+    for (; n > 0; n--) sum *= 2;
+    for (; n < 0; n++) sum *= 0.5f;
+    return sum;
+}
+static float logS(float v) {  // ln v, Newton on expS
+    if (v <= 0) return -10;
+    float y = 0;
+    for (float t = v; t > 2; t *= 0.5f) y += 0.69314718f;
+    for (float t = v; t < 0.5f; t *= 2) y -= 0.69314718f;
+    for (int i = 0; i < 6; i++) {
+        float e = expS(y);
+        y += 2 * (v - e) / (v + e);
+    }
+    return y;
+}
+static float flowF(float v) { return clampf(logS(v / kFlowMin) / logS(kFlowMax / kFlowMin), 0, 1); }
+static float flowAt(float f) { return kFlowMin * expS(clampf(f, 0, 1) * logS(kFlowMax / kFlowMin)); }
+static float flowCancel() { return clampf(1.f / g_prac.speed, kFlowMin, kFlowMax); }  // flow x speed = 1
+static float flowRound(float v) {  // 0.05 steps below 2x, 0.1 below 5x, 0.5 above
+    float step = v < 2 ? 0.05f : v < 5 ? 0.1f : 0.5f;
+    return clampf((float)(int)(v / step + 0.5f) * step, kFlowMin, kFlowMax);
+}
+static bool flowIsCancel() {
+    float d = g_prac.flow - flowCancel();
+    return d < 0.006f && d > -0.006f;
+}
+
+static void paintFlow() {
+    float f = flowF(g_prac.flow);
+    Obj* fill = (Obj*)g_flowFill.get();
+    Obj* knob = (Obj*)g_flowKnob.get();
+    if (alive(fill)) {
+        setPos(rt(fill), Vec2{f * g_SW / 2, 0});
+        setSize(rt(fill), Vec2{f * g_SW, 8});
+    }
+    if (alive(knob)) setPos(rt(knob), Vec2{f * g_SW, 0});
+    Obj* mark = (Obj*)g_flowMark.get();
+    if (alive(mark)) setPos(rt(mark), Vec2{flowF(flowCancel()) * g_SW, 0});
+    char buf[32];
+    if (g_prac.flow < 10) snprintf(buf, sizeof(buf), "%.2fx", g_prac.flow);
+    else snprintf(buf, sizeof(buf), "%.1fx", g_prac.flow);
+    Obj* t = (Obj*)g_flowText.get();
+    if (alive(t)) {
+        setText(t, buf);
+        setColor(t, rgb(flowIsCancel() ? C_CLAY : C_TEXT));  // orange: notes move as fast as in the real song
+    }
+}
+
 static void paintSpeed() {
+    paintFlow();  // the 抵消 mark follows the speed
     float f = (g_prac.speed - 0.05f) / 1.95f;
     Obj* fill = (Obj*)g_speedFill.get();
     Obj* knob = (Obj*)g_speedKnob.get();
@@ -208,6 +270,20 @@ static void onSpeedStep(void* user) {
     paintSpeed();
     practiceSaveSettings();
 }
+// −/+ walk through round values, with the 抵消 value in between
+static void onFlowStep(void* user) {
+    static const float nice[] = {0.5f, 0.6f, 0.7f, 0.8f, 0.9f, 1, 1.2f, 1.5f, 2, 2.5f, 3, 4, 5, 6, 8, 10, 12, 15, 20};
+    float v = g_prac.flow, c = flowCancel(), best = user ? kFlowMax : kFlowMin;
+    for (float n : nice) {
+        if (user && n > v + 0.006f && n < best) best = n;
+        if (!user && n < v - 0.006f && n > best) best = n;
+    }
+    if (user && c > v + 0.006f && c < best) best = c;
+    if (!user && c < v - 0.006f && c > best) best = c;
+    g_prac.flow = best;
+    paintFlow();
+    practiceSaveSettings();
+}
 static void onLoop(void*) {
     g_prac.loop = !g_prac.loop;
     paintSwitch(g_loopTrack, g_loopKnob, g_prac.loop);
@@ -330,11 +406,41 @@ void editorOpen() {
     g_speedText.set(text(sheet, "", 24, rgb(C_TEXT), MiddleRight, true, Vec2{1, 1}, Vec2{1, 0.5f}, Vec2{-40, -270},
                          Vec2{150, 40}));
 
+    // note flow: log scale with marked values, and the 抵消 mark (flow x speed = 1)
+    text(sheet, T("流速", "Flow"), 23, rgb(C_TEXT), MiddleLeft, false, Vec2{0, 1}, Vec2{0, 0.5f}, Vec2{40, -370},
+         Vec2{100, 40});
+    pillButton(sheet, Vec2{0, 1}, Vec2{180, -370}, Vec2{64, 52}, "-", false, onFlowStep, nullptr);
+    Obj* fl = newUI("flow", sheet);
+    place(fl, Vec2{0, 1}, Vec2{0, 0.5f}, Vec2{230, -370}, Vec2{g_SW, 40});
+    image(fl, "rail", SPR_ROUND, rgb(C_TRACK_OFF), Vec2{0, 0.5f}, Vec2{g_SW / 2, 0}, Vec2{g_SW, 8}, 4, true);
+    g_flowFill.set(image(fl, "fill", SPR_ROUND, rgb(C_CLAY), Vec2{0, 0.5f}, Vec2{0, 0}, Vec2{10, 8}, 4));
+    static const float marks[] = {0.5f, 1, 2, 5, 10, 20};
+    static const char* const markText[] = {"0.5x", "1x", "2x", "5x", "10x", "20x"};
+    for (int i = 0; i < 6; i++) {
+        float x = flowF(marks[i]) * g_SW;
+        image(fl, "tick", SPR_SOLID, rgb(0xC9C6BA), Vec2{0, 0.5f}, Vec2{x, -14}, Vec2{2, 10});
+        text(fl, markText[i], 17, rgb(C_MUTED), MiddleCenter, false, Vec2{0, 0.5f}, Vec2{0.5f, 0.5f}, Vec2{x, -32},
+             Vec2{70, 24});
+    }
+    // the 抵消 mark: a dark pin through the rail with its label above (under the knob when they meet)
+    Obj* mark = newUI("cancelMark", fl);
+    place(mark, Vec2{0, 0.5f}, Vec2{0.5f, 0.5f}, Vec2{0, 0}, Vec2{4, 4});
+    image(mark, "pin", SPR_ROUND, rgb(C_TEXT, 0.7f), Vec2{0.5f, 0.5f}, Vec2{0, 0}, Vec2{5, 26}, 2);
+    text(mark, T("抵消", "1:1"), 16, rgb(C_TEXT, 0.7f), MiddleCenter, true, Vec2{0.5f, 0.5f}, Vec2{0.5f, 0.5f},
+         Vec2{0, 28}, Vec2{70, 22});
+    g_flowMark.set(mark);
+    Obj* fknob = image(fl, "knob", SPR_CIRCLE, rgb(0xFFFFFF), Vec2{0, 0.5f}, Vec2{0, 0}, Vec2{36, 36});
+    shadow(fknob, Color{0, 0, 0, 0.18f}, Vec2{0, -1.5f});
+    g_flowKnob.set(fknob);
+    pillButton(sheet, Vec2{1, 1}, Vec2{-250, -370}, Vec2{64, 52}, "+", false, onFlowStep, (void*)1);
+    g_flowText.set(text(sheet, "", 24, rgb(C_TEXT), MiddleRight, true, Vec2{1, 1}, Vec2{1, 0.5f}, Vec2{-40, -370},
+                        Vec2{150, 40}));
+
     // switches + actions
-    switchRow(sheet, 40, -370, T("AB 循环", "A-B loop"), g_loopTrack, g_loopKnob, g_prac.loop, onLoop);
-    switchRow(sheet, 300, -370, T("变速不变调", "Keep pitch"), g_pitchTrack, g_pitchKnob, g_prac.keepPitch, onPitch);
-    pillButton(sheet, Vec2{1, 1}, Vec2{-150, -370}, Vec2{200, 60}, T("开始练习", "Start"), true, onStart, nullptr);
-    pillButton(sheet, Vec2{1, 1}, Vec2{-340, -370}, Vec2{150, 60}, T("取消", "Cancel"), false, onCancel, nullptr);
+    switchRow(sheet, 40, -480, T("AB 循环", "A-B loop"), g_loopTrack, g_loopKnob, g_prac.loop, onLoop);
+    switchRow(sheet, 300, -480, T("变速不变调", "Keep pitch"), g_pitchTrack, g_pitchKnob, g_prac.keepPitch, onPitch);
+    pillButton(sheet, Vec2{1, 1}, Vec2{-150, -480}, Vec2{200, 60}, T("开始练习", "Start"), true, onStart, nullptr);
+    pillButton(sheet, Vec2{1, 1}, Vec2{-340, -480}, Vec2{150, 60}, T("取消", "Cancel"), false, onCancel, nullptr);
 
     g_open = true;
     g_gesture = G_NONE;
@@ -364,7 +470,7 @@ static void endGesture() {
         setDimClear(false);
         practicePreview(g_gesture == G_DRAG_A ? g_prac.a : g_prac.b);
     }
-    if (g_gesture == G_SPEED) practiceSaveSettings();
+    if (g_gesture == G_SPEED || g_gesture == G_FLOW) practiceSaveSettings();
     g_gesture = G_NONE;
 }
 
@@ -431,6 +537,7 @@ void editorTick(float dt) {
             bool inTimeline = p.y > tlY() - kTimelineH / 2 - 20 && p.y < tlY() + kTimelineH / 2 + 40 && lx > -40 &&
                               lx < g_TW + 40;
             bool inSpeed = p.y > spY() - 34 && p.y < spY() + 34 && p.x > spLeft() - 30 && p.x < spLeft() + g_SW + 30;
+            bool inFlow = p.y > flY() - 44 && p.y < flY() + 40 && p.x > spLeft() - 30 && p.x < spLeft() + g_SW + 30;
             if (inTimeline) {
                 float da = lx - xAt(g_prac.a), db = lx - xAt(g_prac.b);
                 da = da < 0 ? -da : da;
@@ -448,6 +555,8 @@ void editorTick(float dt) {
                 }
             } else if (inSpeed) {
                 g_gesture = G_SPEED;
+            } else if (inFlow) {
+                g_gesture = G_FLOW;
             }
         }
         // (a finger left over from a pinch keeps G_PINCH and does nothing until it lifts)
@@ -477,6 +586,15 @@ void editorTick(float dt) {
             if (sp != g_prac.speed) {
                 g_prac.speed = clampf(sp, 0.05f, 2.0f);
                 paintSpeed();
+            }
+        } else if (g_gesture == G_FLOW) {
+            float x = clampf(p.x - spLeft(), 0, g_SW);
+            float c = flowCancel(), cx = flowF(c) * g_SW;
+            // snaps onto the 抵消 mark within a finger's width of it
+            float v = (x - cx < 22 && cx - x < 22) ? c : flowRound(flowAt(x / g_SW));
+            if (v != g_prac.flow) {
+                g_prac.flow = v;
+                paintFlow();
             }
         }
     } else if (g_gesture != G_NONE) {

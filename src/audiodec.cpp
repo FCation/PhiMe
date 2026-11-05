@@ -10,6 +10,32 @@ double sin(double x);
 double cos(double x);
 }
 
+// MP3 and FLAC: dr_mp3 / dr_flac (David Reid, public domain or MIT-0), unmodified. Kept private to this file, no
+// stdio, no SIMD (the SIMD paths want the compiler's stdint.h, which clashes with platform.h). In the device build
+// their <stdlib.h> / <string.h> / <assert.h> / <endian.h> are PhiMe's stand-ins in third_party/libc.
+#define DRMP3_API static
+#define DRFLAC_API static
+#define DR_MP3_IMPLEMENTATION
+#define DR_MP3_NO_STDIO
+#define DR_MP3_NO_SIMD
+#define DR_FLAC_IMPLEMENTATION
+#define DR_FLAC_NO_STDIO
+#define DR_FLAC_NO_SIMD
+#define DR_FLAC_NO_OGG
+#define DR_FLAC_NO_WCHAR
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wall"
+#pragma clang diagnostic ignored "-Wextra"
+#pragma clang diagnostic ignored "-Wunused-function"
+#pragma clang diagnostic ignored "-Wunused-parameter"
+#pragma clang diagnostic ignored "-Wunused-variable"
+#pragma clang diagnostic ignored "-Wsign-compare"
+#pragma clang diagnostic ignored "-Wimplicit-fallthrough"
+#pragma clang diagnostic ignored "-Wmissing-field-initializers"
+#include "third_party/dr_mp3.h"
+#include "third_party/dr_flac.h"
+#pragma clang diagnostic pop
+
 namespace {
 
 // Ogg CRC without a shared, lazily initialized table.
@@ -28,6 +54,7 @@ static uint32_t crc32_update(uint32_t crc, uint8_t byte) {
 #define STB_VORBIS_EXTERNAL_CRC
 #define STB_VORBIS_MAX_CHANNELS 8
 #define alloca __builtin_alloca
+#undef assert  // (dr_mp3 / dr_flac above may have brought the real one)
 #define assert(x) ((void)0)
 #define floor __builtin_floor
 #define abs __builtin_abs
@@ -267,6 +294,108 @@ static bool decodeOgg(const uint8_t* data, uint32_t size, PcmAudio* out,
     return true;
 }
 
+// MP3 / FLAC: decoded in chunks, stopped as soon as the sound passes 20 seconds (a long file never fills memory)
+struct Pcm16Sink {
+    int16_t* pcm = nullptr;
+    uint32_t used = 0, cap = 0;
+    int channels = 0, outChannels = 0;
+    bool start(int ch, uint32_t rate) {
+        channels = ch;
+        outChannels = ch > 2 ? 2 : ch;
+        cap = rate * 20;
+        pcm = static_cast<int16_t*>(malloc(size_t(cap) * outChannels * sizeof(int16_t)));
+        return pcm != nullptr;
+    }
+    // false = longer than 20 s
+    bool add(const float* f, uint32_t n) {
+        if (uint64_t(used) + n > cap) return false;
+        for (uint32_t i = 0; i < n; ++i) {
+            double input[8];
+            for (int c = 0; c < channels; ++c) input[c] = f[size_t(i) * channels + c];
+            mix(input, channels, pcm + size_t(used + i) * outChannels);
+        }
+        used += n;
+        return true;
+    }
+    void finish(PcmAudio* out, int rate) {
+        int16_t* smaller = static_cast<int16_t*>(realloc(pcm, size_t(used) * outChannels * sizeof(int16_t)));
+        *out = {smaller ? smaller : pcm, used, outChannels, rate};
+        pcm = nullptr;
+    }
+    ~Pcm16Sink() { free(pcm); }
+};
+
+static bool decodeMp3(const uint8_t* data, uint32_t size, PcmAudio* out,
+                      AudioError* err, char* detail, int cap) {
+    drmp3 mp3;
+    if (!drmp3_init_memory(&mp3, data, size, nullptr))
+        return fail(err, detail, cap, AUE_CORRUPT, "Cannot open MP3 stream");
+    int channels = int(mp3.channels);
+    uint32_t rate = mp3.sampleRate;
+    if (channels < 1 || channels > 2 || rate < 8000 || rate > 192000) {
+        drmp3_uninit(&mp3);
+        return fail(err, detail, cap, AUE_UNSUPPORTED, "Unsupported MP3 channels or rate");
+    }
+    Pcm16Sink sink;
+    if (!sink.start(channels, rate)) {
+        drmp3_uninit(&mp3);
+        return fail(err, detail, cap, AUE_NO_MEMORY, "Cannot allocate MP3 PCM");
+    }
+    float buffer[1024 * 2];
+    bool tooLong = false;
+    for (;;) {
+        drmp3_uint64 n = drmp3_read_pcm_frames_f32(&mp3, 1024, buffer);
+        if (!n) break;
+        if (!sink.add(buffer, uint32_t(n))) { tooLong = true; break; }
+    }
+    drmp3_uninit(&mp3);
+    if (tooLong) return fail(err, detail, cap, AUE_TOO_LONG, "MP3 exceeds 20 seconds");
+    if (!sink.used) return fail(err, detail, cap, AUE_CORRUPT, "MP3 contains no audio frames");
+    sink.finish(out, int(rate));
+    return true;
+}
+
+static bool decodeFlac(const uint8_t* data, uint32_t size, PcmAudio* out,
+                       AudioError* err, char* detail, int cap) {
+    drflac* flac = drflac_open_memory(data, size, nullptr);
+    if (!flac) return fail(err, detail, cap, AUE_CORRUPT, "Cannot open FLAC stream");
+    int channels = int(flac->channels);
+    uint32_t rate = flac->sampleRate;
+    if (channels < 1 || channels > 8 || rate < 8000 || rate > 192000) {
+        drflac_close(flac);
+        return fail(err, detail, cap, AUE_UNSUPPORTED, "Unsupported FLAC channels or rate");
+    }
+    if (flac->totalPCMFrameCount > uint64_t(rate) * 20) {  // known up front from STREAMINFO
+        drflac_close(flac);
+        return fail(err, detail, cap, AUE_TOO_LONG, "FLAC exceeds 20 seconds");
+    }
+    Pcm16Sink sink;
+    if (!sink.start(channels, rate)) {
+        drflac_close(flac);
+        return fail(err, detail, cap, AUE_NO_MEMORY, "Cannot allocate FLAC PCM");
+    }
+    float buffer[1024 * 8];
+    bool tooLong = false;
+    for (;;) {
+        drflac_uint64 n = drflac_read_pcm_frames_f32(flac, 1024, buffer);
+        if (!n) break;
+        if (!sink.add(buffer, uint32_t(n))) { tooLong = true; break; }
+    }
+    drflac_close(flac);
+    if (tooLong) return fail(err, detail, cap, AUE_TOO_LONG, "FLAC exceeds 20 seconds");
+    if (!sink.used) return fail(err, detail, cap, AUE_CORRUPT, "FLAC contains no audio frames");
+    sink.finish(out, int(rate));
+    return true;
+}
+
+// an ID3v2 tag in front of the audio (MP3, sometimes FLAC): its size, 0 if none
+static uint32_t id3Size(const uint8_t* d, uint32_t n) {
+    if (n < 10 || memcmp(d, "ID3", 3) || ((d[6] | d[7] | d[8] | d[9]) & 0x80)) return 0;
+    uint32_t s = 10 + ((uint32_t(d[6]) << 21) | (uint32_t(d[7]) << 14) | (uint32_t(d[8]) << 7) | d[9]);
+    if (d[5] & 0x10) s += 10;  // footer
+    return s <= n ? s : n;
+}
+
 } // namespace
 
 bool audioDecode(const uint8_t* data, uint32_t size, PcmAudio* out,
@@ -282,7 +411,12 @@ bool audioDecode(const uint8_t* data, uint32_t size, PcmAudio* out,
         return decodeWav(data, size, out, err, detail, detailCap);
     if (size >= 4 && !memcmp(data, "OggS", 4))
         return decodeOgg(data, size, out, err, detail, detailCap);
-    return fail(err, detail, detailCap, AUE_UNKNOWN_FORMAT, "Expected Ogg Vorbis or RIFF/WAVE");
+    uint32_t tag = id3Size(data, size);
+    if (size - tag >= 4 && !memcmp(data + tag, "fLaC", 4))
+        return decodeFlac(data, size, out, err, detail, detailCap);  // dr_flac skips the tag itself
+    if (tag || (size >= 2 && data[0] == 0xff && (data[1] & 0xe0) == 0xe0))
+        return decodeMp3(data, size, out, err, detail, detailCap);
+    return fail(err, detail, detailCap, AUE_UNKNOWN_FORMAT, "Expected Ogg Vorbis, WAV, FLAC or MP3");
 }
 
 void audioFree(PcmAudio* a) {

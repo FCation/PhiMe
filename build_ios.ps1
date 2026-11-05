@@ -13,7 +13,7 @@ $fontsDir = (Join-Path $root "assets\fonts").Replace('\', '/')
 $dylib = Join-Path $out "PhiMeMod.dylib"
 
 $flags = @(
-  "--target=arm64-apple-ios14.0", "-std=c++17", "-O2", "-I$out",
+  "--target=arm64-apple-ios14.0", "-std=c++17", "-O2", "-I$out", "-idirafter$(Join-Path $root 'src\third_party\libc')",
   "-fno-exceptions", "-fno-rtti", "-funwind-tables", "-fno-stack-protector", "-fno-threadsafe-statics",
   "-fvisibility=hidden", "-nostdlib", "-nostdinc++", "-Wall", "-Wno-unused-function",
   "-dynamiclib", "-fuse-ld=lld",
