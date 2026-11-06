@@ -50,7 +50,7 @@ bool sandboxActive() {
 
 static bool drop(const char* what) {
     if (!sandboxActive()) return false;
-    if (g_blocked++ == 0) LOG("autoplay: dropping save writes (%s)", what);
+    if (g_blocked++ == 0) LOG("save sandbox: dropping save writes (%s)", what);
     return true;
 }
 

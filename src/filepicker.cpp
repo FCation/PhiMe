@@ -418,7 +418,7 @@ bool pickerOpen(int type, const char* copyTo, PickDone done) {
 }
 
 bool pickerSave(const char* path, int type, PickDone done) {
-    const char* mime = type == PICK_JSON ? "application/json" : "application/zip";
+    const char* mime = type == PICK_JSON ? "application/json" : type == PICK_TEXT ? "text/plain" : "application/zip";
     return startJava(1, &mime, 1, lastPart(path), path, done);
 }
 

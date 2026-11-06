@@ -4,7 +4,11 @@ namespace pitch {
 
 static const int kRing = 1 << 17;    // per-channel history (~2.7 s at 48 kHz): enough for 1/0.05 = 20x reads
 static const int kGrain = 2048;       // output grain length (~43 ms)
-static const int kMaxCh = 2;
+// Up to 8 output channels: some devices mix to 4 / 6 channels (multi-speaker, surround output), and 1.3.1 and older
+// only handled 2: with more, the audio was left alone and 变速不变调 silently did nothing.
+static const int kMaxCh = 8;
+static volatile int g_channels = 0;  // the layout last seen (for the log)
+int channels() { return g_channels; }
 
 static float g_ring[kMaxCh][kRing];
 static long g_write = 0;               // frames written so far
@@ -49,6 +53,7 @@ static inline double newGrainStart(float ratio) {
 
 void process(float* data, int frames, int channels) {
     if (!g_init) init();
+    g_channels = channels;
     if (channels > kMaxCh) return;  // unexpected layout: leave the audio untouched
     float ratio = g_ratio;
     if (g_resetReq) {
@@ -62,7 +67,7 @@ void process(float* data, int frames, int channels) {
         for (int c = 0; c < channels; c++) g_ring[c][g_write & (kRing - 1)] = data[f * channels + c];
         g_write++;
         if (bypass) continue;
-        float out[kMaxCh] = {0, 0};
+        float out[kMaxCh] = {};
         for (int g = 0; g < 2; g++) {
             if (g_grainT[g] >= kGrain) {
                 g_grainT[g] = 0;

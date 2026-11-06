@@ -30,6 +30,7 @@ static struct {
 static Handle g_pc, g_root, g_btn;
 static bool g_built = false, g_introDone = false, g_endDone = false, g_down = false;
 static int g_introState = 0;  // 0 = not computed yet, 1 = there is an intro to skip, 2 = none
+static int g_introTries = 0;  // frames spent waiting for the speed events
 static float g_introTarget = 0, g_alpha = 0, g_endCheck = 0;
 static bool g_endReady = false;
 static float g_syncT = 0;  // seconds left to watch the music after a jump
@@ -80,6 +81,7 @@ struct Line {
     float k;  // event time units -> seconds
 };
 static float floorAt(const Line& L, float t) {
+    if (L.n <= 0) return 0;
     float u = t / L.k;
     int lo = 0, hi = L.n;  // last event starting at or before u
     while (lo < hi) {
@@ -96,13 +98,11 @@ static bool readLine(Obj* jl, Line* L) {
     L->k = 1;
     int n = 0;
     Obj* evs = fld<Obj*>(jl, K.jlSpeed);
+    if (!evs) return false;
     char* base = listRaw(evs, &n);
-    if (!base || n <= 0) {
-        static int logged = 0;
-        if (logged++ < 2)
-            LOG("skip: speed events of a line: %s, %d", evs ? il2cpp_class_get_name(il2cpp_object_get_class(evs)) : "null", n);
-        return false;
-    }
+    // an empty list is a line without speed events (charts have unused lines: 1.3.2's Rrhar'il IN log): it never
+    // moves, so its notes (it has none, normally) are left out; one such line no longer spoils every other line
+    if (!base || n <= 0) return true;
     L->ev = (Ev*)malloc(sizeof(Ev) * n);
     if (!L->ev) return false;
     for (int i = 0; i < n; i++) {
@@ -121,6 +121,8 @@ static bool readLine(Obj* jl, Line* L) {
 // events in seconds (k = 1) or in the chart's beat units (k = a note's realTime / time): whichever fits the notes
 static float fitK(Line& L, Obj* jl, float* errOut) {
     float ks[2] = {1, 0};
+    *errOut = 0;
+    if (L.n <= 0) return 1;  // no events: nothing to fit
     Obj** notes = nullptr;
     int nn = listView(fld<Obj*>(jl, K.jlAbove), &notes);
     if (nn <= 0) nn = listView(fld<Obj*>(jl, K.jlBelow), &notes);
@@ -164,11 +166,24 @@ static void computeIntro(Obj* pc) {
             first = fld<float>(sorted[i], K.noteTime);
             break;
         }
-    g_introState = 2;
     if (first < 3.f || first > 1e29f) {
+        g_introState = 2;
         LOG("skip: first note at %.2f s, no intro skip", first < 1e29f ? first : -1);
         return;
     }
+    // the lines' speed events can still be empty on the first frames (1.3.1: volcanic AT fell back to the rough
+    // guess): wait for them a little, up to ~1.5 s
+    // (1.3.2 waited for every line: a chart with an unused line, no events at all, waited and then fell back)
+    if (K.jlSpeed >= 0 && g_introTries++ < 90) {
+        Obj** ls = nullptr;
+        int n = listView(fld<Obj*>(jc, K.jcLines), &ls), filled = 0;
+        for (int l = 0; l < n; l++) {
+            int ne = 0;
+            if (alive(ls[l]) && listRaw(fld<Obj*>(ls[l], K.jlSpeed), &ne)) filled++;
+        }
+        if (!filled) return;  // not there yet: next frame
+    }
+    g_introState = 2;
     float target = first - 1.5f, enter = -1;
     const char* how = "fallback";
     Obj** lines = nullptr;
@@ -177,15 +192,22 @@ static void computeIntro(Obj* pc) {
         Line* L = (Line*)calloc(nl, sizeof(Line));
         bool good = L != nullptr;
         float worst = 0;
+        int empty = 0;
         for (int l = 0; good && l < nl; l++) {
-            if (!alive(lines[l]) || !readLine(lines[l], &L[l])) {
+            if (!alive(lines[l])) continue;  // (L[l] stays empty)
+            if (!readLine(lines[l], &L[l])) {
                 good = false;
                 break;
+            }
+            if (L[l].n <= 0) {
+                empty++;
+                continue;
             }
             float err;
             fitK(L[l], lines[l], &err);
             if (err > worst) worst = err;
         }
+        if (empty) LOG("skip: %d of %d judge lines have no speed events", empty, nl);
         if (good && worst < 0.05f) {
             // the notes of the first few seconds, collected once (1.2.0 walked every note of every line at every
             // 0.02 s step: a hitch when a long-intro song started)
@@ -196,7 +218,7 @@ static void computeIntro(Obj* pc) {
             int cap = 256, ne = 0;
             Early* early = (Early*)malloc(sizeof(Early) * cap);
             for (int l = 0; early && l < nl; l++)
-                for (int side = 0; side < 2; side++) {
+                for (int side = 0; side < 2 && L[l].n > 0 && alive(lines[l]); side++) {
                     Obj** nn = nullptr;
                     int c = listView(fld<Obj*>(lines[l], side ? K.jlBelow : K.jlAbove), &nn);
                     for (int i = 0; i < c && ne < cap; i++) {
@@ -444,6 +466,7 @@ void skipLevelStart(Obj* pc) {
     g_btn.clear();
     g_built = g_introDone = g_endDone = g_endReady = g_down = false;
     g_introState = 0;
+    g_introTries = 0;
     g_endCheck = 0;
     g_alpha = 0;
     g_mode = 0;

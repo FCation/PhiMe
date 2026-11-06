@@ -17,3 +17,4 @@ tests/data/
 *.apk
 *.ipa
 *.zip
+assets/fonts/*.local.txt

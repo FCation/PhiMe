@@ -1229,8 +1229,8 @@ bool skinInstall() {
     Il2CppClass* GI = findClass("", "GameInformation");
     S.giMain = GI ? il2cpp_class_get_field_from_name(GI, "_main") : nullptr;
     S.giNoteScale = GI ? fieldOffset(GI, "noteScale") : -1;
-    S.rSetShared = findMethod(S.Renderer, "set_sharedMaterial", 1);
-    S.rGetMat = findMethod(S.Renderer, "get_material", 0);
+    // (Renderer.set_sharedMaterial / get_material are stripped in 4.0.x: the sparks are tinted by fxTick through
+    // critTintRenderer instead; not looked up, so the log has no "method not found" for them)
     S.matHas = Mat ? findMethod(Mat, "HasProperty", 1, IL2CPP_TYPE_STRING) : nullptr;
     S.matSetColor = Mat ? findMethod(Mat, "SetColor", 2, IL2CPP_TYPE_STRING) : nullptr;
     S.pcJc = fieldOffset(PC, "judgeControl");

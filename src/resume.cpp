@@ -496,7 +496,9 @@ static bool scheduleMusic(Obj* pc, float clip, float lead) {
 
 // "continue" was just tapped (Play(true) left _startTime at -1): our prepare time instead of the game's 3 s
 static void takeOver(Obj* pc) {
-    float d = g_cfg.resumePreviewTenths / 10.f;
+    // practice levels resume at once: the section editor and the loop are there for going back, and the 3 s
+    // replay felt like a stall there (and at slow speeds with the flow changed it could get stuck: 1.3.0, iOS)
+    float d = g_prac.st != PR_OFF ? 0.f : g_cfg.resumePreviewTenths / 10.f;
     float now = timeSinceLevelLoad();
     removeGameCountdown(pc);
     g_rate = g_prac.st == PR_RUN ? g_prac.speed : 1.f;
@@ -549,7 +551,8 @@ static void hk_PC_Update(Obj* self, const MethodInfo* m) {
     if (!g_session && st < -0.5f && st > -1.5f && fld<bool>(self, R.pcPlaying) && !fld<bool>(self, R.pcFirst) &&
         !fld<bool>(self, R.pcFirstGuide)) {
         configLoad();
-        if (g_cfg.resumePreview) takeOver(self);  // off: the game's own 3 s countdown, untouched
+        // off: the game's own 3 s countdown, untouched (practice levels always resume at once, see takeOver)
+        if (g_cfg.resumePreview || g_prac.st != PR_OFF) takeOver(self);
     }
     if (g_session) tick(false);
     orig_PC_Update(self, m);

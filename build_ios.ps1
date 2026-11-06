@@ -1,5 +1,8 @@
 # Build PhiMeMod.dylib (arm64 iOS) with the Windows LLVM toolchain. No Xcode / SDK needed.
-#   powershell -ExecutionPolicy Bypass -File mod\build_ios.ps1
+#   powershell -ExecutionPolicy Bypass -File mod\build_ios.ps1 [-Serif Local|Source]
+# -Serif: the Latin UI font. Local (default) = the font named in assets/fonts/serif.local.txt, for your own builds
+# (see serif_font.ps1; without it: Source Serif 4); Source = Source Serif 4 (SIL OFL), for builds that are shared.
+param([ValidateSet("Local", "Source")][string]$Serif = "Local")
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 $llvm = "C:\Program Files\LLVM\bin"
@@ -9,7 +12,8 @@ New-Item -ItemType Directory -Force $out | Out-Null
 $src = Get-ChildItem (Join-Path $root "src") -Filter *.cpp | ForEach-Object { $_.FullName }
 # fonts embedded with .incbin (src/assets.cpp) need the assets folder's absolute path
 $fontsDir = (Join-Path $root "assets\fonts").Replace('\', '/')
-[IO.File]::WriteAllText((Join-Path $out "pm_assets.h"), "#pragma once`n#define PM_FONTS_DIR `"$fontsDir`"`n")
+. (Join-Path $root "serif_font.ps1")
+[IO.File]::WriteAllText((Join-Path $out "pm_assets.h"), (pmAssetsHeader $fontsDir $Serif))
 $dylib = Join-Path $out "PhiMeMod.dylib"
 
 $flags = @(

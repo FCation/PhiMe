@@ -77,7 +77,12 @@ bool isPhone();       // a phone-sized screen (the dpi, else the aspect ratio)
 float uiScale();      // 1 on tablets, bigger on phones
 float canvasH();      // height of a default overlay canvas in its own units (1080 / uiScale())
 // Our overlay canvases fade in when made. Closing one: uiFadeAway (fades out, then destroys it).
-void uiFadeAway(Obj* overlayRoot);
+void uiFadeAway(Obj* overlayRoot, Obj* zoom = nullptr);  // zoom: a card / sheet that shrinks a little as it goes
+// Glides (a damped spring: quick, a soft curve, no jump). The first call for a transform puts it there at once;
+// later calls move it there smoothly. uiGlide: its anchored position. uiGlideBar: a fill growing from x = 0 (its
+// position is half its width), width w, height h.
+void uiGlide(Obj* rt, Vec2 pos);
+void uiGlideBar(Obj* rt, float w, float h);
 void uiFadeOnClone(Obj* src, Obj* clone);  // the Instantiate hook: puts the game's scene wipe above our canvases
 float uiAlphaOf(Obj* transform);           // how visible a piece of game UI is (0 when inactive)
 

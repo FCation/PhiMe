@@ -41,6 +41,7 @@ static double pm_acos(double) { return 0; }
 
 namespace unity {
 bool embeddedFont(int which, const unsigned char** data, int* size, const char** name);
+const char* serifFontName();  // assets.cpp: which Latin font this build carries
 }
 
 namespace glyphs {
@@ -69,7 +70,7 @@ bool ready() {
         g_gap[i] = g * em;
     }
     g_state = 1;
-    LOG("glyphs: own text rendering on (Source Serif 4 + Noto Sans SC)");
+    LOG("glyphs: own text rendering on (%s + Noto Sans SC)", unity::serifFontName());
     return true;
 }
 

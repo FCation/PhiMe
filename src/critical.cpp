@@ -42,7 +42,7 @@ static struct {
     int hNote, hIsJudged, hJudged, hJudgeOver, hPerfect, hJudgeTime, hPrefab, hMissed;
     int scPerfect, scGood, scBad, scMiss, scPrefab;
     int jcLines, jlRenderer, jlShowingPic, liApFc;
-    FieldInfo* perfectRange;
+    FieldInfo *perfectRange, *goodRange, *badRange;
     Il2CppClass *Renderer, *Material;
     const MethodInfo *srGetColor, *srSetColor, *getShared, *setMat, *matCtor, *matHas, *matGet, *matSet;
     const MethodInfo *matGetTex, *matSetTex;  // optional (stars)
@@ -114,6 +114,18 @@ static float perfectRange() {
     float r = 0.08f;
     if (C.perfectRange) il2cpp_field_static_get_value(C.perfectRange, &r);
     return r > 0.001f && r < 1.f ? r : 0.08f;
+}
+// the game's windows as they stand this frame (course mode narrows them): Critical, Perfect, Good, Bad
+void critWindows(float* crit, float* perfect, float* good, float* bad) {
+    float p = perfectRange(), g = 0.18f, b = 0.22f;
+    if (C.goodRange) il2cpp_field_static_get_value(C.goodRange, &g);
+    if (C.badRange) il2cpp_field_static_get_value(C.badRange, &b);
+    if (!(g > p && g < 1.f)) g = p * 2.25f;
+    if (!(b >= g && b < 1.f)) b = g * 1.22f;
+    *crit = p * 0.5f;
+    *perfect = p;
+    *good = g;
+    *bad = b;
 }
 
 // ---- the orange effect ----
@@ -386,7 +398,12 @@ static HoldSnap g_holds[2048];
 
 static float absf(float v) { return v < 0 ? -v : v; }
 
-static void paintLines(Obj* pc, Obj* sc, const Color* apFc = nullptr);
+// the judge lines' colours (lineFrame, at render time)
+static Handle g_linePc;
+static const int kLineSlots = 256;
+static Color g_lShown[kLineSlots], g_lGame[kLineSlots], g_lLast[kLineSlots];
+static bool g_lInit[kLineSlots];
+static void lineFrame(void*);
 
 // Pass 2 runs the game's update over the held-back taps only: for the call, the click list's backing array is a
 // small one holding just them (the other lists are emptied), and whatever the game removed from it (judged taps
@@ -459,6 +476,7 @@ bool critRunNotes(Obj* num, void (*orig)(Obj*, const MethodInfo*), const MethodI
             bool a = fld<bool>(cc, C.ccJudged), b = fld<bool>(note, C.noteJudged);
             if (!a && !b) continue;
             float off = fld<float>(note, C.noteTime) - now, t = absf(off);
+            if (counting) hudOffsetHit(cc, off);  // the timing bar / EARLY LATE (hud.cpp)
             if (D.tapsLogged < 8 && counting) {
                 if (D.tapsLogged == 0 && C.ccScore >= 0) {  // why the perfectJudge swap alone was not enough
                     Obj* csc = fld<Obj*>(cc, C.ccScore);
@@ -492,6 +510,7 @@ bool critRunNotes(Obj* num, void (*orig)(Obj*, const MethodInfo*), const MethodI
             Obj* note = fld<Obj*>(h, C.hNote);
             if (!note || !(fld<bool>(h, C.hIsJudged) || fld<bool>(note, C.noteJudged))) continue;
             float t = absf(fld<float>(note, C.noteTime) - now);
+            if (counting) hudOffsetHit(h, fld<float>(note, C.noteTime) - now);
             if (t >= pr) continue;
             Obj* use = show ? effectFor(fld<Obj*>(h, C.hPrefab), t <= kCritWindow) : nullptr;
             if (alive(use)) fld<Obj*>(h, C.hPrefab) = use;
@@ -593,9 +612,16 @@ bool critRunNotes(Obj* num, void (*orig)(Obj*, const MethodInfo*), const MethodI
             "scored %d), hold heads gold %d / orange %d",
             g_crit, perfect, D.held, D.pass2, D.pass2Perfect, D.holdCrit, D.holdPlain);
     }
-    Color skinLine[2];
-    if (show) paintLines(pc, sc);
-    else if (skinLineColors(skinLine)) paintLines(pc, sc, skinLine);  // a skin's colorPerfect (AP) / colorGood (FC)
+    // the judge lines are painted at render time (lineFrame), after everything else that sets their colour
+    if (pc != g_linePc.get()) {
+        g_linePc.set(pc);
+        for (bool& b : g_lInit) b = false;
+        static bool registered = false;
+        if (!registered) {
+            registered = true;
+            onEveryFrame(lineFrame);
+        }
+    }
     watchTick();
     uint64_t total = perfNow() - tStart;
     perfAdd(PF_CRIT, total > tOrig ? total - tOrig : 0);
@@ -603,26 +629,74 @@ bool critRunNotes(Obj* num, void (*orig)(Obj*, const MethodInfo*), const MethodI
 }
 
 // ---- judge line: AP+ gold, AP orange, FC blue (only while the game's AP/FC indicator is on) ----
-static void paintLines(Obj* pc, Obj* sc, const Color* apFc) {
-    if (fld<int>(sc, C.scBad) + fld<int>(sc, C.scMiss) > 0) return;  // the game's own (white) line
-    Obj* li = C.pcLevelInfo >= 0 ? fld<Obj*>(pc, C.pcLevelInfo) : nullptr;
-    if (!li || (C.liApFc >= 0 && !fld<bool>(li, C.liApFc))) return;
+// JudgeLineControl.UpdateInfo writes every line's colour on every frame (AP / FC / white, alpha from its disappear
+// events), and on the level's first second something after the note update wrote it again (1.5.0 and older painted
+// right after the note update: a skin's colour showed only after ~1 s). Now the lines are painted at render time,
+// last, and every change of colour (ours or the game's own AP -> FC -> white, which the game makes at once) is a
+// short fade. Per line: the colour shown, the game's own colour (what it wrote, seen when it differs from ours).
+static void lineFrame(void*) {
+    Obj* pc = (Obj*)g_linePc.get();
+    if (!pc) return;
+    if (!alive(pc)) {
+        g_linePc.clear();
+        return;
+    }
+    Obj* sc = fld<Obj*>(pc, C.pcScore);
     Obj* jc = fld<Obj*>(pc, C.pcJudge);
-    if (!jc) return;
+    if (!sc || !jc) return;
+    Obj* li = C.pcLevelInfo >= 0 ? fld<Obj*>(pc, C.pcLevelInfo) : nullptr;
+    bool apFc = li && (C.liApFc < 0 || fld<bool>(li, C.liApFc));
+    bool clean = fld<int>(sc, C.scBad) + fld<int>(sc, C.scMiss) == 0;
     int perfect = fld<int>(sc, C.scPerfect), good = fld<int>(sc, C.scGood);
-    // FC blue / AP = the plain Perfect effect's colour / AP+ = the Critical effect's colour
-    Color c = apFc ? apFc[good > 0 ? 1 : 0]
-                   : good > 0 ? Color{0.62f, 0.82f, 1.f, 1} : perfect > g_crit ? fxColour(kPerfTint) : fxColour(kCritTint);
+    // our colour while it is ours to give: Critical shown (AP+ gold / AP orange / FC blue) or a skin's
+    bool ours = false;
+    Color mine{1, 1, 1, 1}, skin[2];
+    if (apFc && clean) {
+        if (critEnabled()) {
+            ours = true;
+            mine = good > 0 ? Color{0.62f, 0.82f, 1.f, 1} : perfect > g_crit ? fxColour(kPerfTint) : fxColour(kCritTint);
+        } else if (skinLineColors(skin)) {
+            ours = true;
+            mine = skin[good > 0 ? 1 : 0];
+        }
+    }
+    float dt = unscaledDt();
+    if (dt > 0.05f) dt = 0.05f;
+    float k = dt / (0.12f + dt);  // ~0.12 s time constant: quick, but a visible fade
     Obj** lines;
     int n = elements(fld<Obj*>(jc, C.jcLines), &lines);
     for (int i = 0; i < n; i++) {
         Obj* jl = lines[i];
-        if (!jl || (C.jlShowingPic >= 0 && fld<bool>(jl, C.jlShowingPic))) continue;
+        if (!jl) continue;
+        bool slot = i < kLineSlots;
+        if (C.jlShowingPic >= 0 && fld<bool>(jl, C.jlShowingPic)) {  // a picture line: the game's own colour
+            if (slot) g_lInit[i] = false;
+            continue;
+        }
         Obj* sr = fld<Obj*>(jl, C.jlRenderer);
         if (!sr) continue;
         Color cur = callm<Color>(C.srGetColor, sr);
-        if (cur.r != c.r || cur.g != c.g || cur.b != c.b)  // only when the game changed it back
-            callm<void>(C.srSetColor, sr, Color{c.r, c.g, c.b, cur.a});
+        if (!slot) {  // (more lines than slots: no fade)
+            if (ours) callm<void>(C.srSetColor, sr, Color{mine.r, mine.g, mine.b, cur.a});
+            continue;
+        }
+        Color& shown = g_lShown[i];
+        Color& game = g_lGame[i];
+        Color& last = g_lLast[i];
+        bool wrote = !g_lInit[i] || cur.r != last.r || cur.g != last.g || cur.b != last.b;
+        if (wrote) game = cur;  // the game wrote its colour this frame
+        Color want = ours ? mine : game;
+        if (!g_lInit[i]) {
+            shown = want;  // the first frame: straight to it (no game colour first)
+            g_lInit[i] = true;
+        } else {
+            shown.r += (want.r - shown.r) * k;
+            shown.g += (want.g - shown.g) * k;
+            shown.b += (want.b - shown.b) * k;
+        }
+        Color out{shown.r, shown.g, shown.b, cur.a};
+        if (out.r != cur.r || out.g != cur.g || out.b != cur.b) callm<void>(C.srSetColor, sr, out);
+        last = out;
     }
 }
 
@@ -864,6 +938,8 @@ bool criticalInstall() {
     C.jlShowingPic = fieldOffset(JL, "isShowingPic");
     C.liApFc = fieldOffset(LI, "ApFcIsOn");
     C.perfectRange = il2cpp_class_get_field_from_name(JC, "PerfectTimeRange");
+    C.goodRange = il2cpp_class_get_field_from_name(JC, "GoodTimeRange");
+    C.badRange = il2cpp_class_get_field_from_name(JC, "BadTimeRange");
     C.srGetColor = findMethod(SR, "get_color", 0);
     C.srSetColor = findMethod(SR, "set_color", 1);
     C.getShared = findMethod(C.Renderer, "get_sharedMaterial", 0);

@@ -65,6 +65,8 @@ static Obj* control() {
     Obj* c = fld<Obj*>(ss, H.ssCtrl);
     return alive(c) ? c : nullptr;
 }
+// a level of the game's own course mode is being entered (known before ProgressControl.Start, unlike its flag)
+bool challengeRunning() { return H.ok && g_curSong >= 0; }
 bool challengeUiActive() {
     Obj* c = control();
     return c && activeInHierarchy(gameObject(c));

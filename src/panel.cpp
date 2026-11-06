@@ -47,11 +47,13 @@ struct ToggleRow {
     Handle track, knob;
     float knobX;
 };
-static const int kMaxRows = 8;
+static const int kMaxRows = 12;  // (显示 has 8 since the timing bar rows)
 static ToggleRow g_rows[kMaxRows];
 static int g_rowCount = 0;
 static Handle g_root, g_card, g_dim, g_clawd, g_page, g_sub;
 static float g_openT = -1;  // opening animation progress, -1 = idle
+static Handle g_pageGroup;   // the page's fade-in after a tab change
+static float g_pageT = -1;
 static float g_clawdT = 0;
 static int g_tab = 0;  // 0 游玩, 1 显示, 2 其他, 3 皮肤, 4 账号, 5 关于 (kept while the game runs)
 static void buildPage();
@@ -95,6 +97,8 @@ struct Seg {
     int n;
     void (*changed)();
     Handle pill[6], label[6];
+    Handle thumb;  // the white capsule under the chosen option: it glides to a new choice (1.4.2 and older: a jump)
+    Vec2 at[6];    // each option's place
 };
 struct SegOpt {
     Seg* seg;
@@ -106,12 +110,13 @@ static const int C_SEG_BG = 0xF0EEE6;
 
 static void paintSeg(Seg& s) {
     for (int i = 0; i < s.n; i++) {
-        Obj* p = (Obj*)s.pill[i].get();
         Obj* l = (Obj*)s.label[i].get();
         bool on = *s.value == i;
-        if (alive(p)) setColor(p, on ? rgb(0xFFFFFF) : rgb(0xFFFFFF, 0));
         if (alive(l)) setColor(l, rgb(on ? C_TEXT : C_MUTED));
     }
+    Obj* th = (Obj*)s.thumb.get();
+    int v = *s.value;
+    if (alive(th) && v >= 0 && v < s.n) uiGlide(rt(th), s.at[v]);
 }
 
 static void onSeg(void* user) {
@@ -127,6 +132,7 @@ static void clearSeg(Seg& s) {
         s.pill[i].clear();
         s.label[i].clear();
     }
+    s.thumb.clear();
 }
 
 // n options of w x h, the control centred at pos (relative to anchor on the parent); vertical = stacked top to bottom
@@ -140,8 +146,13 @@ static void segmented(int slot, Obj* parent, Vec2 anchor, Vec2 pos, float w, flo
     float total = n * (vertical ? h : w) + 8;
     Obj* bg = image(parent, "seg", SPR_ROUND, rgb(C_SEG_BG), anchor, pos,
                     vertical ? Vec2{w + 8, total} : Vec2{total, h + 8}, 16);
+    for (int i = 0; i < n; i++)
+        s.at[i] = vertical ? Vec2{0, total / 2 - 4 - h * (i + 0.5f)} : Vec2{-total / 2 + 4 + w * (i + 0.5f), 0};
+    // the capsule first: under every option's label
+    int v0 = *value >= 0 && *value < n ? *value : 0;
+    s.thumb.set(image(rt(bg), "thumb", SPR_ROUND, rgb(0xFFFFFF), Vec2{0.5f, 0.5f}, s.at[v0], Vec2{w, h}, 12));
     for (int i = 0; i < n; i++) {
-        Vec2 p = vertical ? Vec2{0, total / 2 - 4 - h * (i + 0.5f)} : Vec2{-total / 2 + 4 + w * (i + 0.5f), 0};
+        Vec2 p = s.at[i];
         Obj* pill = image(rt(bg), "opt", SPR_ROUND, rgb(0xFFFFFF, 0), Vec2{0.5f, 0.5f}, p, Vec2{w, h}, 12, true);
         Obj* l = text(rt(pill), labels[i], 22, rgb(C_MUTED), MiddleCenter, false, Vec2{0.5f, 0.5f}, Vec2{0.5f, 0.5f},
                       Vec2{0, 1}, Vec2{w, h});
@@ -177,6 +188,7 @@ static void paintSub() {
 static Handle g_durText;
 static Handle g_volText[3];  // the hit sound volume values (skin page)
 static Handle g_maskText;     // the hide bar height value
+static Handle g_offSizeText;  // the timing bar size value
 
 static void paintDuration() {
     Obj* t = (Obj*)g_durText.get();
@@ -224,6 +236,7 @@ static void clearPage() {
     g_durText.clear();
     for (Handle& h : g_volText) h.clear();
     g_maskText.clear();
+    g_offSizeText.clear();
     g_sub.clear();
     clearSeg(g_segs[1]);
     for (int i = 0; i < g_rowCount; i++) {
@@ -235,7 +248,7 @@ static void clearPage() {
 
 static void closePanel(void*) {
     Obj* root = (Obj*)g_root.get();
-    uiFadeAway(root);  // fades out, then destroyed
+    uiFadeAway(root, (Obj*)g_card.get());  // fades out (the card shrinking a little), then destroyed
     g_root.clear();
     g_card.clear();
     g_dim.clear();
@@ -440,6 +453,39 @@ static void maskRow(Obj* page, float y) {
     paintMask();
 }
 
+// the timing bar's size, 50 - 200 % in 10 % steps
+static void paintOffSize() {
+    Obj* t = (Obj*)g_offSizeText.get();
+    if (!alive(t)) return;
+    char b[16];
+    snprintf(b, sizeof b, "%d%%", g_cfg.offsetSize);
+    setText(t, b);
+}
+static void onOffSize(void* user) {
+    int v = g_cfg.offsetSize + (int)(intptr_t)user;
+    g_cfg.offsetSize = v < 50 ? 50 : v > 200 ? 200 : v;
+    configSave();
+    paintOffSize();
+    LOG("config: timing bar size %d%%", g_cfg.offsetSize);
+}
+static void offSizeRow(Obj* page, float y) {
+    text(page, T("偏移条大小", "Bar size"), 23, rgb(C_TEXT), MiddleLeft, false, Vec2{0, 0.5f}, Vec2{0, 0.5f}, Vec2{kPad, y},
+         Vec2{300, 36});
+    text(page, T("连同指针和 EARLY / LATE", "with the pointer and EARLY / LATE"), 17, rgb(C_TEXT, 0.5f), MiddleLeft, false,
+         Vec2{0, 0.5f}, Vec2{0, 0.5f}, Vec2{kPad + 130, y - 1}, Vec2{300, 30});
+    float plusX = -kPad - 30, valueX = plusX - 30 - 62, minusX = valueX - 62 - 30;
+    const char* glyph[2] = {"−", "+"};
+    for (int s = 0; s < 2; s++) {
+        Obj* b = image(page, "step", SPR_ROUND, rgb(C_LINE), Vec2{1, 0.5f}, Vec2{s ? plusX : minusX, y}, Vec2{60, 46}, 14, true);
+        Obj* f = image(rt(b), "fill", SPR_ROUND, rgb(C_IVORY), Vec2{0.5f, 0.5f}, Vec2{0, 0}, Vec2{56, 42}, 12);
+        text(rt(f), glyph[s], 28, rgb(C_TEXT), MiddleCenter, false, Vec2{0.5f, 0.5f}, Vec2{0.5f, 0.5f}, Vec2{0, 1}, Vec2{56, 42});
+        onClick(gameObject(b), b, onOffSize, (void*)(intptr_t)(s ? 10 : -10));
+    }
+    Obj* v = text(page, "", 23, rgb(C_CLAY), MiddleCenter, true, Vec2{1, 0.5f}, Vec2{0.5f, 0.5f}, Vec2{valueX, y}, Vec2{120, 40});
+    g_offSizeText.set(v);
+    paintOffSize();
+}
+
 static void accModeRow(Obj* parent, float y) {
     text(parent, T("计算方式", "Method"), 23, rgb(C_TEXT), MiddleLeft, false, Vec2{0, 0.5f}, Vec2{0, 0.5f}, Vec2{kPad, y},
          Vec2{300, 36});
@@ -475,6 +521,11 @@ static void buildPage() {
     g_page.set(parentOf(content));
     Obj* page = newUI("page", content);
     place(page, Vec2{0.5f, 1}, Vec2{0.5f, 1}, Vec2{0, g_top - vpTop}, Vec2{pageW, g_cardH});
+    // a new tab's page fades in (while the capsule glides over)
+    Obj* pg = addCanvasGroup(gameObject(page));
+    setGroupAlpha(pg, 0);
+    g_pageGroup.set(pg);
+    g_pageT = 0;
 
     float y = g_phone ? g_top - 96 - 4 : kTop - 96 - kTabsH;
     pageBody(page, y);
@@ -500,6 +551,10 @@ static void termRow(Obj* page, float& y, const char* term, const char* desc) {
     y -= (h > 28 ? h : 28) + 12;
 }
 static void aboutPage(Obj* page, float& y) {
+    y -= 10 + 52;
+    actionRow(page, y, T("分析日志", "Check the log"), T("遇到问题先点这里：看看日志里有什么，并导出发给作者", "Something wrong? See what the log says, and export it for the author"), nullptr, 0, T("分析", "Check"), SAVE_LOG_CHECK);
+    y -= 52 + 10;
+    divider(page, y);
     y -= 10 + 52;
 #if defined(__APPLE__)
     actionRow(page, y, T("Mod 文件夹", "Mod folder"), T("在「文件」App 里打开：日志 PhiMeMod.log 和皮肤", "Opens in Files: PhiMeMod.log and skins"), nullptr, 0, T("打开", "Open"), SAVE_OPEN_FOLDER);
@@ -648,6 +703,14 @@ static void pageBody(Obj* page, float& y) {
         divider(page, y);
         y -= 10 + 52;
         toggleRow(page, y, T("判定详情", "Judgement counts"), T("连击下方显示 Perfect / Good / Bad+Miss 数量", "Perfect / Good / Bad+Miss counts under the combo"), &g_cfg.judgeShow);
+        y -= 104;
+        toggleRow(page, y, T("判定偏移条", "Timing bar"), T("连击下方的指针条，实时显示这一下偏早还是偏晚", "A pointer under the combo: how early or late each hit was"), &g_cfg.offsetBar);
+        y -= 52 + 4 + 30;
+        offSizeRow(page, y);
+        y -= 30 + 4 + 52;
+        toggleRow(page, y, T("EARLY / LATE 提示", "EARLY / LATE"), T("Good 和 Bad 时在连击下方提示偏早还是偏晚", "Says early or late under the combo on a Good or Bad"), &g_cfg.earlyLate);
+        y -= 104;
+        toggleRow(page, y, T("小 P 也提示", "On small Perfects too"), T("不是大 P 的 Perfect（±40 ms 外）也提示 EARLY / LATE", "Also for Perfects outside the 40 ms Critical window"), &g_cfg.earlyLatePerfect);
         y -= 52 + 10;
         divider(page, y);
         y -= 10 + 52;
@@ -666,6 +729,8 @@ static void pageBody(Obj* page, float& y) {
         note(page, y, T("实时：按已判定的音符计算；最高：之后全部 Perfect 能达到的准度。", "Live: notes judged so far. Best: reachable with all Perfects left."));
         y -= 32;
         note(page, y, T("判定详情颜色：黄色 Perfect，蓝色 Good，灰色 Bad + Miss。", "Colours: yellow Perfect, blue Good, grey Bad + Miss."));
+        y -= 32;
+        note(page, y, T("偏移条左边是偏早、右边是偏晚，颜色跟随判定区间（开皮肤时用皮肤的颜色）。", "Timing bar: early on the left, late on the right, in the judgement colours (the skin's when one is on)."));
         paintSub();
     }
 }
@@ -761,6 +826,13 @@ static void panelTick() {
         Obj* dim = (Obj*)g_dim.get();
         if (alive(dim)) setColor(dim, Color{0.08f, 0.07f, 0.06f, 0.4f * e});
         if (g_openT >= 1) g_openT = -1;
+    }
+    if (g_pageT >= 0) {
+        g_pageT += dt / 0.16f;
+        float t = g_pageT >= 1 ? 1 : g_pageT;
+        Obj* pg = (Obj*)g_pageGroup.get();
+        if (alive(pg)) setGroupAlpha(pg, easeOutCubic(t));
+        if (g_pageT >= 1) g_pageT = -1;
     }
     Obj* clawd = (Obj*)g_clawd.get();
     if (alive(clawd)) {

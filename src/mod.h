@@ -2,8 +2,8 @@
 #include "unity.h"
 #include "perf.h"
 
-#define PM_VERSION "1.3.1"
-#define PM_VERSION_NUM 10301 // major * 10000 + minor * 100 + patch (PhiMe_Claim)
+#define PM_VERSION "1.5.2"
+#define PM_VERSION_NUM 10502 // major * 10000 + minor * 100 + patch (PhiMe_Claim)
 
 struct ModConfig {
     bool loaded = false;
@@ -21,6 +21,10 @@ struct ModConfig {
     bool accSwap = false;   // accuracy takes the big score slot, the score becomes the small line
     bool judgeShow = false; // Perfect / Good / Bad+Miss counts under the combo
     bool hideScore = false; // hide the score + combo corner (combo number, COMBO label, score, our accuracy / counts)
+    bool offsetBar = false;        // timing bar with a pointer under the combo (hud.cpp)
+    int offsetSize = 100;          // its size, 50..200 %
+    bool earlyLate = false;        // EARLY / LATE under the combo for Good / Bad
+    bool earlyLatePerfect = false; // ... and for plain Perfects (outside the Critical window)
     bool fastLoad = true;   // shorter song loading screen (loading.cpp)
     bool critical = false;  // Critical Perfect (<= 40 ms) vs Perfect (critical.cpp)
     bool course = false;    // course (challenge) mode judging and scoring, records kept locally (course.cpp)
@@ -84,6 +88,8 @@ bool loadingInstall();
 bool criticalInstall();
 bool critEnabled();                 // switch on and hooks resolved
 int critCount();                    // Criticals so far in this level
+void critWindows(float* crit, float* perfect, float* good, float* bad);  // the judge windows now (seconds)
+void hudOffsetHit(Obj* note, float offset);  // a tap / hold head judged this update, offset = note time - now (s)
 // Runs NoteUpdateManager.Update (`orig`) so every Perfect gets its Critical / Perfect effect and count;
 // false = mode off, the caller runs the original. counting = false during the resume replay (restored anyway).
 void critResultStart(Obj* levelOverControl);  // result screen: split the Perfect count (LevelOverControl.Start)
@@ -151,6 +157,7 @@ bool challengeInstall();
 void challengeSongSelectStart(Obj* songSelector);
 void challengeSongSelectFrame();  // per frame
 bool challengeUiActive();        // song select shows the 1st / 2nd / 3rd bar
+bool challengeRunning();         // a level of the game's own course mode is being entered / played
 void challengeBeforeLevel(const char* when);  // Loading.Start / ProgressControl.Start
 bool maskInstall();                      // mask.cpp: 上隐条, a black band over the top of the chart
 void maskLevelStart(Obj* progressControl);
@@ -170,7 +177,10 @@ bool resAccOldBest(float* acc);           // this result's record accuracy from 
 void prefSetIntRaw(const char* key, int v);  // result.cpp: past the autoplay save sandbox
 void forEachChart(void (*cb)(const char* id, const char* level, void* user), void* user);  // every song, every level
 enum { SAVE_OPEN_FOLDER, SAVE_SKIN_IMPORT, SAVE_MASK_PREVIEW, SAVE_LICENSE, SAVE_B30, SAVE_TUTORIAL, SAVE_LOGIN,
-       SAVE_FORGET_LOGIN };
+       SAVE_FORGET_LOGIN, SAVE_LOG_CHECK };
+const char* logLeastPath();  // main.cpp: this launch's log ("" if none)
+const char* logFullPath();   // iOS: every launch's log; Android: the launch before this one
+void logCheckOpen();         // logcheck.cpp: 分析日志 (a summary of what the log says, and export)
 bool b30Install();  // b30.cpp: the in-game score checker (Best 27 + Phi 3, 推分)
 void b30Open();
 bool unityLogInstall();  // unitylog.cpp: Unity's own errors / exceptions into PhiMeMod.log
@@ -212,7 +222,7 @@ const char* accountNick();      // the TapTap nickname after a PhiMe login in th
 void tutorialOpen();     // savedata.cpp: the first-run guide again (关于 → 新手引导)
 const char* loginHelpText();  // savedata.cpp: how this install logs in, and why (guide page 5, the 账号 tab)
 // the system file picker (filepicker.cpp): iOS UIDocumentPicker / Android Storage Access Framework
-enum { PICK_ZIP, PICK_JSON };
+enum { PICK_ZIP, PICK_JSON, PICK_TEXT };
 // status 1 = done (open: `path` is a readable copy of the chosen file), 0 = cancelled, -1 = failed (`name` = why);
 // `name` = the chosen file's name. Runs on the main thread, from pickerPoll().
 typedef void (*PickDone)(int status, const char* path, const char* name);

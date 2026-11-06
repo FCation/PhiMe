@@ -31,10 +31,26 @@ static bool rksNow(float* out) {
     return *out >= 0 && *out < 100;
 }
 static int thousandths(float v) { return (int)(v * 1000 + 0.5f); }
+// The game writes its 2-decimal RKS again after Start (1.3.3 and older wrote ours once: the bar was back to 2
+// decimals outside a count-up). Every text we write is kept with the string we put there; keepFrame writes it again
+// whenever the game has replaced it.
+struct Kept {
+    Handle t, s;
+};
+static Kept g_kept[4];
 static void showRks(Obj* t, float v) {
     char b[24];
     snprintf(b, sizeof b, "%d.%03d", thousandths(v) / 1000, thousandths(v) % 1000);
-    setText(t, b);
+    Il2CppString* s = str(b);
+    setTextStr(t, s);
+    int slot = -1;
+    for (int i = 0; i < 4 && slot < 0; i++)
+        if (g_kept[i].t.get() == t) slot = i;
+    for (int i = 0; i < 4 && slot < 0; i++)
+        if (!alive((Obj*)g_kept[i].t.get())) slot = i;
+    if (slot < 0) slot = 0;
+    if (g_kept[slot].t.get() != t) g_kept[slot].t.set(t);
+    g_kept[slot].s.set(s);
 }
 static void wide(Obj* t) {
     if (K.overflow) callm<void>(K.overflow, t, 1);  // Overflow: one more digit must not be cut off
@@ -170,12 +186,40 @@ static void rksFrame(void*) {
     }
 }
 
+// every frame: a kept RKS text the game rewrote gets 3 decimals again (the one being animated keeps its own value)
+static void keepFrame(void*) {
+    for (Kept& k : g_kept) {
+        Obj* t = (Obj*)k.t.get();
+        if (!t) continue;
+        if (!alive(t)) {
+            k.t.clear();
+            k.s.clear();
+            continue;
+        }
+        Il2CppString* mine = (Il2CppString*)k.s.get();
+        if (!mine || textStr(t) == mine) continue;
+        float now;
+        if (t == g_text.get()) setTextStr(t, mine);  // the result's count-up (or its wait): the value we showed
+        else if (rksNow(&now)) showRks(t, now);
+        static int logged = 0;
+        if (logged++ < 2) LOG("rks: the game rewrote the RKS text, back to 3 decimals");
+    }
+}
+static void keepOn() {
+    static bool registered = false;
+    if (!registered) {
+        registered = true;
+        onEveryFrame(keepFrame);
+    }
+}
+
 static void hk_PBC_Start(Obj* self, const MethodInfo* m) {
     orig_PBC_Start(self, m);
     Obj* t = K.pbcRank >= 0 ? fld<Obj*>(self, K.pbcRank) : nullptr;
     float now;
     if (!alive(t) || !rksNow(&now)) return;
     wide(t);
+    keepOn();
     bool result = K.LOC && findObjectOfType(K.LOC);
     if (!result || g_known < 0) {
         showRks(t, now);
@@ -201,6 +245,7 @@ static void hk_SFC_Start(Obj* self, const MethodInfo* m) {
     float now;
     if (!alive(t) || !rksNow(&now)) return;
     wide(t);
+    keepOn();
     showRks(t, now);
 }
 

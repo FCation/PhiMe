@@ -1301,10 +1301,15 @@ static struct {
 } g_cd;
 static Handle g_cRoot, g_cCard, g_cDim, g_cClawd, g_cPage, g_cPill[6], g_cLabel[6];
 static float g_cOpenT = -1, g_cClawdT = 0;
+static Handle g_cThumb;  // the level tabs' sliding capsule
+static Handle g_cPageGroup;
+static float g_cPageT = -1;
+static Vec2 g_cAt[6];
 
 static void closeCard(void*) {
     Obj* root = (Obj*)g_cRoot.get();
-    uiFadeAway(root);  // fades out, then destroyed
+    uiFadeAway(root, (Obj*)g_cCard.get());  // fades out (the card shrinking a little), then destroyed
+    g_cThumb.clear();
     g_cRoot.clear();
     g_cCard.clear();
     g_cDim.clear();
@@ -1359,12 +1364,12 @@ static void judgeCell(Obj* page, float x, float y, float w, float h, const char*
 
 static void paintTabs() {
     for (int i = 0; i < g_cd.n; i++) {
-        Obj* p = (Obj*)g_cPill[i].get();
         Obj* l = (Obj*)g_cLabel[i].get();
         bool on = i == g_cd.sel;
-        if (alive(p)) setColor(p, on ? rgb(0xFFFFFF) : rgb(0xFFFFFF, 0));
         if (alive(l)) setColor(l, rgb(on ? C_TEXT : C_MUTED));
     }
+    Obj* th = (Obj*)g_cThumb.get();
+    if (alive(th) && g_cd.sel >= 0 && g_cd.sel < g_cd.n) uiGlide(rt(th), g_cAt[g_cd.sel]);
 }
 
 static void buildCardPage() {
@@ -1375,6 +1380,10 @@ static void buildCardPage() {
     Obj* page = newUI("page", card);
     stretch(page, 0);
     g_cPage.set(page);
+    Obj* pg = addCanvasGroup(gameObject(page));
+    setGroupAlpha(pg, 0);
+    g_cPageGroup.set(pg);
+    g_cPageT = 0;
     const CardLevel& L = g_cd.lv[g_cd.sel];
     const Detail* d = L.hasDet ? &L.det : nullptr;
     bool match = d && L.played && __builtin_fabs(d->acc - L.a) <= 0.00005;  // the kept play is the best-accuracy one
@@ -1564,9 +1573,12 @@ static void openCard(void*) {
     float total = g_cd.n * tw + 8;
     Obj* seg = image(card, "levels", SPR_ROUND, rgb(C_CHIP), Vec2{0, 0.5f}, Vec2{kPad + total / 2, ty},
                      Vec2{total, th + 8}, 16);
+    // the white capsule under the chosen level: it glides to a new one (paintTabs)
+    for (int i = 0; i < g_cd.n; i++) g_cAt[i] = Vec2{-total / 2 + 4 + tw * (i + 0.5f), 0};
+    g_cThumb.set(image(rt(seg), "thumb", SPR_ROUND, rgb(0xFFFFFF), Vec2{0.5f, 0.5f}, g_cAt[g_cd.sel], Vec2{tw, th}, 12));
     for (int i = 0; i < g_cd.n; i++) {
         const CardLevel& c = g_cd.lv[i];
-        Vec2 p{-total / 2 + 4 + tw * (i + 0.5f), 0};
+        Vec2 p = g_cAt[i];
         Obj* pill = image(rt(seg), "opt", SPR_ROUND, rgb(0xFFFFFF, 0), Vec2{0.5f, 0.5f}, p, Vec2{tw, th}, 12, true);
         char t[40];
         if (c.constant > 0) snprintf(t, sizeof t, "%s  %.1f", c.name, c.constant);
@@ -1614,6 +1626,13 @@ static void cardTick() {
         Obj* dim = (Obj*)g_cDim.get();
         if (alive(dim)) setColor(dim, Color{0.08f, 0.07f, 0.06f, 0.4f * e});
         if (g_cOpenT >= 1) g_cOpenT = -1;
+    }
+    if (g_cPageT >= 0) {  // a level's page fades in after a tab change
+        g_cPageT += dt / 0.16f;
+        float t = g_cPageT >= 1 ? 1 : g_cPageT, u = 1 - t;
+        Obj* pg = (Obj*)g_cPageGroup.get();
+        if (alive(pg)) setGroupAlpha(pg, 1 - u * u * u);
+        if (g_cPageT >= 1) g_cPageT = -1;
     }
     Obj* clawd = (Obj*)g_cClawd.get();
     if (alive(clawd)) {

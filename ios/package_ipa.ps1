@@ -4,7 +4,8 @@
 #   powershell -ExecutionPolicy Bypass -File mod\ios\package_ipa.ps1 -Ipa path\to\original.ipa
 param(
   [Parameter(Mandatory = $true)][string]$Ipa,
-  [string]$Out = ""
+  [string]$Out = "",
+  [ValidateSet("Local", "Source")][string]$Serif = "Local"  # the UI font (see build_ios.ps1)
 )
 $ErrorActionPreference = "Stop"
 $here = $PSScriptRoot
@@ -13,7 +14,7 @@ if (-not $Out) { $Out = Join-Path $modRoot "out\ios\Phigros-PhiMeMod.ipa" }
 New-Item -ItemType Directory -Force (Split-Path $Out) | Out-Null
 
 # ---- build the dylib ----
-& powershell -ExecutionPolicy Bypass -File (Join-Path $modRoot "build_ios.ps1")
+& powershell -ExecutionPolicy Bypass -File (Join-Path $modRoot "build_ios.ps1") -Serif $Serif
 if ($LASTEXITCODE -ne 0) { throw "ios build failed" }
 $dylib = Join-Path $modRoot "out\PhiMeMod.dylib"
 

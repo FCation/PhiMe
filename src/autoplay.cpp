@@ -32,6 +32,13 @@ void configLoad() {
     g_cfg.accSwap = prefGetInt("PhiMeMod.accSwap", 0) != 0;
     g_cfg.judgeShow = prefGetInt("PhiMeMod.judgeShow", 0) != 0;
     g_cfg.hideScore = prefGetInt("PhiMeMod.hideScore", 0) != 0;
+    g_cfg.offsetBar = prefGetInt("PhiMeMod.offsetBar", 0) != 0;
+    {
+        int s = prefGetInt("PhiMeMod.offsetSize", 100);
+        g_cfg.offsetSize = s < 50 ? 50 : s > 200 ? 200 : s;
+    }
+    g_cfg.earlyLate = prefGetInt("PhiMeMod.earlyLate", 0) != 0;
+    g_cfg.earlyLatePerfect = prefGetInt("PhiMeMod.earlyLatePerfect", 0) != 0;
     {
         int f = prefGetInt("PhiMeMod.practiceFlow", 100);
         g_cfg.practiceFlow = f < 50 ? 50 : f > 2000 ? 2000 : f;
@@ -73,6 +80,10 @@ void configSave() {
     prefSetInt("PhiMeMod.accSwap", g_cfg.accSwap ? 1 : 0);
     prefSetInt("PhiMeMod.judgeShow", g_cfg.judgeShow ? 1 : 0);
     prefSetInt("PhiMeMod.hideScore", g_cfg.hideScore ? 1 : 0);
+    prefSetInt("PhiMeMod.offsetBar", g_cfg.offsetBar ? 1 : 0);
+    prefSetInt("PhiMeMod.offsetSize", g_cfg.offsetSize);
+    prefSetInt("PhiMeMod.earlyLate", g_cfg.earlyLate ? 1 : 0);
+    prefSetInt("PhiMeMod.earlyLatePerfect", g_cfg.earlyLatePerfect ? 1 : 0);
     prefSetInt("PhiMeMod.practiceFlow", g_cfg.practiceFlow);
     prefSetInt("PhiMeMod.fastLoad", g_cfg.fastLoad ? 1 : 0);
     prefSetInt("PhiMeMod.critical", g_cfg.critical ? 1 : 0);
@@ -257,11 +268,20 @@ static void hk_PC_Start(Obj* self, const MethodInfo* m) {
     g_levelAuto = g_cfg.autoplay || maskPreviewPending();  // the hide bar preview plays itself
     g_prevNow = -1e9f;
     LOG("level start, autoplay=%d", g_levelAuto);
-    // autoplay and practice runs never save (sandbox set before the original Start, which may save)
-    sandboxBegin(g_levelAuto || g_cfg.practice || maskPreviewPending());
+    // autoplay and practice runs never save (sandbox set before the original Start, which may save). The game's own
+    // course mode is never a practice level (1.3.2 and older: with 练习 on, its levels opened the section editor and
+    // blocked the result screen, so the course could not go on, and its results were dropped)
+    bool challenge = challengeRunning();
+    sandboxBegin(g_levelAuto || (g_cfg.practice && !challenge) || maskPreviewPending());
     challengeBeforeLevel("level start");
     orig_PC_Start(self, m);
     courseLevelStart(self);  // after the original: it knows by then whether this is the game's own challenge
+    if (!challenge && gameChallengeLevel() && g_cfg.practice && !g_levelAuto) {
+        sandboxBegin(false);  // its flag says challenge after all: its results are kept
+        LOG("level start: the game's course mode (seen after Start), practice and its sandbox off");
+    } else if (challenge && g_cfg.practice) {
+        LOG("level start: the game's course mode, practice off for this level");
+    }
     if (g_levelAuto && !maskPreviewPending()) showBadge();  // (not on the hide bar preview)
     practiceLevelStart(self);
     hitsoundLevelStart(self);

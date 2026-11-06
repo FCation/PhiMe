@@ -58,7 +58,7 @@ static void paintSwitch(Handle& track, Handle& knob, bool on) {
     Obj* kn = (Obj*)knob.get();
     if (!alive(tr) || !alive(kn)) return;
     setColor(tr, rgb(on ? C_CLAY : C_TRACK_OFF));
-    setPos(rt(kn), Vec2{on ? 15.f : -15.f, 0});
+    uiGlide(rt(kn), Vec2{on ? 15.f : -15.f, 0});  // slides over (the first paint puts it there)
 }
 
 // ---------- flow slider: 0.5x .. 20x on a log scale (20x is 40 times 0.5x) ----------
@@ -102,13 +102,11 @@ static void paintFlow() {
     float f = flowF(g_prac.flow);
     Obj* fill = (Obj*)g_flowFill.get();
     Obj* knob = (Obj*)g_flowKnob.get();
-    if (alive(fill)) {
-        setPos(rt(fill), Vec2{f * g_SW / 2, 0});
-        setSize(rt(fill), Vec2{f * g_SW, 8});
-    }
-    if (alive(knob)) setPos(rt(knob), Vec2{f * g_SW, 0});
+    // the knob and fill glide between the steps (a drag no longer jumps from step to step)
+    if (alive(fill)) uiGlideBar(rt(fill), f * g_SW, 8);
+    if (alive(knob)) uiGlide(rt(knob), Vec2{f * g_SW, 0});
     Obj* mark = (Obj*)g_flowMark.get();
-    if (alive(mark)) setPos(rt(mark), Vec2{flowF(flowCancel()) * g_SW, 0});
+    if (alive(mark)) uiGlide(mark, Vec2{flowF(flowCancel()) * g_SW, 0});
     char buf[32];
     if (g_prac.flow < 10) snprintf(buf, sizeof(buf), "%.2fx", g_prac.flow);
     else snprintf(buf, sizeof(buf), "%.1fx", g_prac.flow);
@@ -124,11 +122,8 @@ static void paintSpeed() {
     float f = (g_prac.speed - 0.05f) / 1.95f;
     Obj* fill = (Obj*)g_speedFill.get();
     Obj* knob = (Obj*)g_speedKnob.get();
-    if (alive(fill)) {
-        setPos(rt(fill), Vec2{f * g_SW / 2, 0});
-        setSize(rt(fill), Vec2{f * g_SW, 8});
-    }
-    if (alive(knob)) setPos(rt(knob), Vec2{f * g_SW, 0});
+    if (alive(fill)) uiGlideBar(rt(fill), f * g_SW, 8);
+    if (alive(knob)) uiGlide(rt(knob), Vec2{f * g_SW, 0});
     char buf[32];
     snprintf(buf, sizeof(buf), "%.2fx", g_prac.speed);
     Obj* t = (Obj*)g_speedText.get();
@@ -450,7 +445,8 @@ void editorOpen() {
 
 void editorClose() {
     Obj* root = (Obj*)g_root.get();
-    uiFadeAway(root);  // fades out, then destroyed
+    Obj* sg = (Obj*)g_sheetGroup.get();
+    uiFadeAway(root, alive(sg) ? rt(sg) : nullptr);  // fades out (the sheet shrinking a little), then destroyed
     g_root.clear();
     g_open = false;
     g_gesture = G_NONE;

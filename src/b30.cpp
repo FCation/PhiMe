@@ -236,7 +236,7 @@ static void section(Obj* page, float pad, float& y, const char* title, const cha
 
 static void closePage(void*) {
     Obj* root = (Obj*)g_root.get();
-    if (root) uiFadeAway(root);
+    if (root) uiFadeAway(root, (Obj*)g_card.get());  // the card shrinks a little as it fades
     g_root.clear();
     g_card.clear();
     g_dim.clear();

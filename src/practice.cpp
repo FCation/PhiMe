@@ -348,7 +348,9 @@ static void reseed(float t, float from, float to, bool late = false) {
     g_clock = clip;
     pitch::reset();
     skinRefreshNotes();  // the new note objects start with the game's sprites
-    LOG("practice: seek %.2f, %d notes", t, created);
+    // a drag in the editor reseeds every frame (1.3.2 logged each: 100+ lines per drag); every 20th preview is enough
+    static int previews = 0;
+    if (!late || previews++ % 20 == 0) LOG("practice: %s %.2f, %d notes", late ? "preview" : "seek", t, created);
 }
 
 void practiceAudioJump(float clip) {
@@ -439,6 +441,9 @@ static void clearLevelOver() {
 static void startRun() {
     Obj* pc = (Obj*)g_pc.get();
     if (!alive(pc)) return;
+    // a loop restart while a resume session still ran: end it first, or its end would put back the judged flags of
+    // the notes made again here (they would vanish unplayed in the new loop)
+    resumeAbort();
     clearLevelOver();
     float pre = 1.0f * g_prac.speed;  // ~1 s of real time before the first note
     float t0 = g_prac.a - pre;
@@ -546,7 +551,13 @@ static void refreshSong() {
     Obj* pc = (Obj*)g_pc.get();
     Obj* aas = (Obj*)g_aas.get();
     // ClipLength dereferences the AudioSource/clip, which may not exist yet: only call it safely
-    if (!alive(pc) || !alive(aas) || !P.aasLen || !musicSource()) return;
+    Obj* src = musicSource();
+    if (!alive(pc) || !alive(aas) || !P.aasLen || !src) return;
+    // the clip is still loading: ask again next frame (calling ClipLength now throws a NullReferenceException,
+    // which 1.3.1 and older did on every frame of the level start: slow, and a log line each time)
+    static const MethodInfo* getClip = nullptr;
+    if (!getClip) getClip = findMethod(il2cpp_object_get_class(src), "get_clip", 0);
+    if (getClip && !callm<Obj*>(getClip, src)) return;
     float clipLen = 0;
     if (!invokeFloat(P.aasLen, aas, &clipLen)) return;
     float len = clipLen - offsetOf(pc);
@@ -648,6 +659,11 @@ static void practiceFrame(void*) {
         g_pc.clear();
         flowRestore();  // (if the level's LevelInformation outlives it)
         return;
+    }
+    static int loggedCh = -1;  // the music's output layout: 变速不变调 needs it (see pitch.cpp)
+    if (pitch::channels() != loggedCh && pitch::channels() > 0) {
+        loggedCh = pitch::channels();
+        LOG("practice: music output has %d channel(s)", loggedCh);
     }
     PM_ONCE("practice: frame callback alive");
     float dt = unscaledDt();
@@ -776,7 +792,8 @@ void practiceLevelStart(Obj* pc) {
     // the last level's length must not open the editor before this song's clip is read (it kept the old timeline
     // and end points); the section itself is kept by refreshSong when the song is the same
     g_prac.songLen = 0;
-    if (!g_cfg.practice && !maskPreviewPending()) return;  // (the hide bar preview runs as a practice loop)
+    // (the hide bar preview runs as a practice loop; the game's own course mode never practises)
+    if ((!g_cfg.practice || gameChallengeLevel() || challengeRunning()) && !maskPreviewPending()) return;
     Obj* aas = fld<Obj*>(pc, P.pcAas);
     if (!alive(aas)) {
         LOG("practice: music player not found");

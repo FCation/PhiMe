@@ -3,7 +3,8 @@
 #   powershell -ExecutionPolicy Bypass -File mod\android\repack.ps1 -Apk path\to\original.apk
 param(
   [Parameter(Mandatory = $true)][string]$Apk,
-  [string]$Out = ""
+  [string]$Out = "",
+  [ValidateSet("Local", "Source")][string]$Serif = "Local"  # the UI font (see build_ios.ps1)
 )
 $ErrorActionPreference = "Stop"
 $here = $PSScriptRoot
@@ -20,7 +21,7 @@ $apksigner = Join-Path $bt.FullName "apksigner.bat"
 $zipalign = Join-Path $bt.FullName "zipalign.exe"
 
 # ---- build the libraries ----
-& powershell -ExecutionPolicy Bypass -File (Join-Path $modRoot "build_android.ps1")
+& powershell -ExecutionPolicy Bypass -File (Join-Path $modRoot "build_android.ps1") -Serif $Serif
 if ($LASTEXITCODE -ne 0) { throw "android build failed" }
 $libDir = Join-Path $modRoot "out\android"
 

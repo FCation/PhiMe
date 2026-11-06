@@ -8,4 +8,5 @@ namespace pitch {
 void setSpeed(float speed);  // main thread; 1.0 = bypass
 void reset();                // main thread; call after seeking so grains don't smear old audio in
 void process(float* data, int frames, int channels);  // audio thread, in place
+int channels();              // the output channel count last seen by process (0 = not called yet)
 }

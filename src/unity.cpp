@@ -814,6 +814,7 @@ Obj* overlayCanvas(const char* name, int order, float needH) {
 // our UI the way it covers the game's (before: the screen went black under our buttons, which vanished later).
 struct FadeEntry {
     Handle root, group;
+    Handle zoom;  // closing: this card / sheet shrinks a little as it fades (the opening zoom, backwards)
     float a, target;
     bool kill;
 };
@@ -838,10 +839,13 @@ static void fadeTick(void*) {
                              : (e.a - step < e.target ? e.target : e.a - step);
         float s = e.a * e.a * (3 - 2 * e.a);  // ease in-out
         setGroupAlpha((Obj*)e.group.get(), s);
+        Obj* z = e.kill ? (Obj*)e.zoom.get() : nullptr;
+        if (alive(z)) setScale(z, 0.94f + 0.06f * s);
         if (e.kill && e.a <= 0) {
             destroy(gameObject(r));
             e.root.clear();
             e.group.clear();
+            e.zoom.clear();
         }
     }
 }
@@ -866,17 +870,114 @@ static void fadeAdd(Obj* rt) {
     // no free slot: shown at once, as before
 }
 
-void uiFadeAway(Obj* rt) {
+void uiFadeAway(Obj* rt, Obj* zoom) {
     if (!alive(rt)) return;
     for (FadeEntry& e : g_fades) {
         if (e.root.get() != rt) continue;
         e.target = 0;
         e.kill = true;
+        if (alive(zoom)) e.zoom.set(zoom);
         setBlocksRaycasts((Obj*)e.group.get(), false);  // taps go through while it fades
         return;
     }
     destroy(gameObject(rt));
 }
+
+// ---------- glides: selection capsules, stepped sliders, switch knobs ----------
+// A damped spring per transform (omega 30 /s, zeta 0.8: ~0.15 s, a hint of overshoot so the move reads as a curve).
+// Stepped sliders and segmented controls jumped from step to step before (1.4.2 and older).
+struct Glide {
+    Handle rt;
+    Obj* raw;    // the same, for the lookup (the handle keeps it alive)
+    bool bar;    // a fill from x = 0: x is its width
+    float x, y, vx, vy, tx, ty, h;
+    bool moving;
+};
+static Glide g_glides[64];
+static bool g_glideTicking = false;
+static void glideApply(Glide& g) {
+    Obj* r = (Obj*)g.rt.get();
+    if (g.bar) {
+        float w = g.x < 0 ? 0 : g.x;
+        setPos(r, Vec2{w / 2, g.ty});
+        setSize(r, Vec2{w, g.h});
+    } else {
+        setPos(r, Vec2{g.x, g.y});
+    }
+}
+static void glideTick(void*) {
+    float dt = unscaledDt();
+    if (dt > 0.05f) dt = 0.05f;
+    const float w0 = 30.f, z = 0.8f;
+    int steps = dt > 0.017f ? 2 : 1;
+    float h = dt / steps;
+    for (Glide& g : g_glides) {
+        if (!g.raw || !g.moving) continue;
+        if (!alive((Obj*)g.rt.get())) {
+            g.rt.clear();
+            g.raw = nullptr;
+            continue;
+        }
+        for (int s = 0; s < steps; s++) {
+            g.vx += (w0 * w0 * (g.tx - g.x) - 2 * z * w0 * g.vx) * h;
+            g.vy += (w0 * w0 * (g.ty - g.y) - 2 * z * w0 * g.vy) * h;
+            g.x += g.vx * h;
+            g.y += g.vy * h;
+        }
+        float ex = g.tx - g.x, ey = g.ty - g.y;
+        if (ex * ex + ey * ey < 0.01f && g.vx * g.vx + g.vy * g.vy < 1.f) {
+            g.x = g.tx, g.y = g.ty, g.vx = g.vy = 0;
+            g.moving = false;
+        }
+        glideApply(g);
+    }
+}
+static void glideTo(Obj* r, float x, float y, bool bar, float h) {
+    if (!alive(r)) return;
+    Glide* g = nullptr;
+    for (Glide& e : g_glides)
+        if (e.raw == r && alive((Obj*)e.rt.get())) {
+            g = &e;
+            break;
+        }
+    if (!g) {  // new: put it there at once
+        for (Glide& e : g_glides)
+            if (!e.raw || !alive((Obj*)e.rt.get())) {
+                g = &e;
+                break;
+            }
+        if (!g) {  // no slot: as before, a jump
+            if (bar) {
+                setPos(r, Vec2{x / 2, y});
+                setSize(r, Vec2{x, h});
+            } else {
+                setPos(r, Vec2{x, y});
+            }
+            return;
+        }
+        g->rt.set(r);
+        g->raw = r;
+        g->bar = bar;
+        g->x = g->tx = x;
+        g->y = g->ty = y;
+        g->vx = g->vy = 0;
+        g->h = h;
+        g->moving = false;
+        glideApply(*g);
+        if (!g_glideTicking) {
+            g_glideTicking = true;
+            onEveryFrame(glideTick);
+        }
+        return;
+    }
+    g->tx = x;
+    g->ty = y;
+    g->h = h;
+    if (bar) g->y = y;  // a bar only grows sideways
+    g->moving = g->x != x || g->y != y || g->vx != 0 || g->vy != 0;
+}
+void uiGlide(Obj* rt, Vec2 pos) { glideTo(rt, pos.x, pos.y, false, 0); }
+void uiGlideBar(Obj* rt, float w, float h) { glideTo(rt, w, 0, true, h); }
 
 // the game's scene wipe: CutOut (leaving a scene) / CutIn (entering one), from the Instantiate hook
 void uiFadeOnClone(Obj* src, Obj* clone) {
@@ -1636,6 +1737,7 @@ void onEveryFrame(NativeCallback cb) {
     for (int i = 0; i < g_frameCbCount; i++)
         if (g_frameCbs[i] == cb) known = true;
     if (!known && g_frameCbCount < 32) g_frameCbs[g_frameCbCount++] = cb;
+    else if (!known) LOG("per-frame callback DROPPED: all 32 slots in use");
     if (g_frameDelegate.h || !U.WillRender || !U.addWillRender) return;
     Obj* d = makeDelegate(U.WillRender, frameDispatch, nullptr);
     if (!d) return;

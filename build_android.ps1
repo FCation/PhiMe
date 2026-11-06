@@ -1,9 +1,11 @@
 # Build the Android (arm64-v8a) mod with the Windows LLVM toolchain. No NDK needed:
 # the system libraries we link against are generated as tiny link-time stubs (the phone's real
 # libc/libdl/liblog are used at runtime).
-#   powershell -ExecutionPolicy Bypass -File mod\build_android.ps1
+#   powershell -ExecutionPolicy Bypass -File mod\build_android.ps1 [-Serif Local|Source]
 # Output: mod/out/android/libPhiMeMod.so  (the mod)
 #         mod/out/android/libmain.so      (loader that replaces Unity's libmain.so)
+# -Serif: see build_ios.ps1 (Local = your own font from serif.local.txt; Source = Source Serif 4, shareable)
+param([ValidateSet("Local", "Source")][string]$Serif = "Local")
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 $llvm = "C:\Program Files\LLVM\bin"
@@ -72,7 +74,8 @@ if (-not (Test-Path $inc) -or ($java | Where-Object { $_.LastWriteTime -gt (Get-
 $src = Get-ChildItem (Join-Path $root "src") -Filter *.cpp | ForEach-Object { $_.FullName }
 # fonts embedded with .incbin (src/assets.cpp) need the assets folder's absolute path
 $fontsDir = (Join-Path $root "assets\fonts").Replace('\', '/')
-[IO.File]::WriteAllText((Join-Path $out "pm_assets.h"), "#pragma once`n#define PM_FONTS_DIR `"$fontsDir`"`n")
+. (Join-Path $root "serif_font.ps1")
+[IO.File]::WriteAllText((Join-Path $out "pm_assets.h"), (pmAssetsHeader $fontsDir $Serif))
 $mod = Join-Path $out "libPhiMeMod.so"
 & "$llvm\clang++.exe" @common "-std=c++17" "-fvisibility=hidden" "-nostdinc++" "-I$out" "-idirafter$(Join-Path $root 'src\third_party\libc')" @link "-Wl,-soname,libPhiMeMod.so" `
   @src @stubLibs -o $mod

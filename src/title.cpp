@@ -12,6 +12,7 @@ static int g_info = -1;
 static const MethodInfo* g_hOverflow = nullptr;
 static Handle g_splash;
 static Il2CppString* g_done = nullptr;  // the string we last wrote
+static bool g_moved = false;            // the line was lifted on this title screen
 
 static void titleFrame(void*) {
     if (!g_splash.h) return;
@@ -41,6 +42,13 @@ static void titleFrame(void*) {
     if (g_hOverflow) callm<void>(g_hOverflow, t, 1);  // never wrap the longer line
     setText(t, out);
     g_done = textStr(t);
+    // a little higher: the longer line sat on the text under it (1.5.0 and older); once per title screen
+    if (!g_moved) {
+        g_moved = true;
+        RectInfo ri;
+        int fs = textFontSize(t);
+        if (rectInfo(rt(t), &ri)) setPos(rt(t), Vec2{ri.pos.x, ri.pos.y + (fs > 0 ? fs : 30) * 0.9f});
+    }
     LOG("title: version line '%.*s' + PhiMe Mod v" PM_VERSION, cut, b);
 }
 
@@ -75,6 +83,7 @@ static void hk_Splash_Start(Obj* self, const MethodInfo* m) {
     orig_Splash_Start(self, m);
     g_splash.set(self);
     g_done = nullptr;
+    g_moved = false;
     onEveryFrame(titleFrame);
 }
 

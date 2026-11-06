@@ -176,6 +176,24 @@ static bool screenWorld(Obj* cam, float* cx, float* cy, float* w, float* h) {
     return *h > 0;
 }
 
+// The HUD's canvas (the one the score is on; the combo, our accuracy line, counts and timing bar are all on it):
+// returns its render mode (0 = overlay, drawn after every camera anyway; else sorted with the world: the band goes
+// just under it, in *layer / *order), -1 = not there yet. At the level's first frame the score text may not be set:
+// 1.4.0 and older looked once (the log said "HUD canvas mode -1") and then kept the band at the top of everything.
+static int g_hudMode = -1, g_hudTries = 0;
+static int hudCanvas(Obj* pc, int* layer, int* order) {
+    Obj* sc = fld<Obj*>(pc, M.pcScore);
+    Obj* st = alive(sc) && M.scScoreText >= 0 ? fld<Obj*>(sc, M.scScoreText) : nullptr;
+    Obj* ct = alive(st) ? canvasTransform(rt(st)) : nullptr;
+    Obj* cv = ct ? getComponent(gameObject(ct), M.Canvas) : nullptr;
+    int mode = cv ? callm<int>(M.cvMode, cv) : -1;
+    if (cv && mode != 0) {  // a HUD sorted with the world: just under it
+        *layer = callm<int>(M.cvLayer, cv);
+        *order = callm<int>(M.cvOrder, cv) - 1;
+    }
+    return mode;
+}
+
 static void build(Obj* pc) {
     g_built = true;
     Obj* cam = callm<Obj*>(M.camMain);
@@ -197,16 +215,9 @@ static void build(Obj* pc) {
         if (M.goGetLayer) objLayer = callm<int>(M.goGetLayer, gameObject(sr));
         break;
     }
-    Obj* sc = fld<Obj*>(pc, M.pcScore);
-    Obj* st = alive(sc) && M.scScoreText >= 0 ? fld<Obj*>(sc, M.scScoreText) : nullptr;
-    Obj* ct = alive(st) ? canvasTransform(rt(st)) : nullptr;
-    Obj* cv = ct ? getComponent(gameObject(ct), M.Canvas) : nullptr;
-    int mode = cv ? callm<int>(M.cvMode, cv) : -1;
-    if (cv && mode != 0) {  // a HUD sorted with the world: just under it
-        int cl = callm<int>(M.cvLayer, cv), co = callm<int>(M.cvOrder, cv);
-        layer = cl;
-        order = co - 1;
-    }
+    int mode = hudCanvas(pc, &layer, &order);
+    g_hudMode = mode;
+    g_hudTries = 0;
     Obj* rtb = newUI("PhiMeHideBar", nullptr);
     Obj* go = gameObject(rtb);
     if (M.goLayer) callm<void>(M.goLayer, go, objLayer);
@@ -240,6 +251,18 @@ static void maskFrame(void*) {
     Obj* sr = (Obj*)g_band.get();
     if (!alive(sr)) return;
     PerfScope ps(PF_MASK);
+    // the HUD canvas was not there when the band was made: look again (every 10th frame, ~10 s at most)
+    if (g_hudMode < 0 && g_hudTries < 600 && g_hudTries++ % 10 == 0) {
+        int layer = 0, order = 32767;
+        g_hudMode = hudCanvas(pc, &layer, &order);
+        if (g_hudMode > 0) {
+            callm<void>(M.rLayer, sr, layer);
+            callm<void>(M.rOrder, sr, order);
+        }
+        if (g_hudMode >= 0)
+            LOG("mask: HUD canvas found later (mode %d)%s", g_hudMode,
+                g_hudMode > 0 ? ", band moved just under it" : ": an overlay, drawn over the band anyway");
+    }
     Obj* jc = fld<Obj*>(pc, M.pcJc);
     if (!g_lines && alive(jc)) collectTimes(jc);
     Obj* cam = callm<Obj*>(M.camMain);

@@ -3,6 +3,11 @@
 
 static int g_logFd = -2;
 static int g_leastFd = -2;  // PhiMeMod-least.log: this launch only (overwritten at every start), small to send
+static char g_leastPath[512], g_fullPath[512];  // for 分析日志 (logcheck.cpp)
+const char* logLeastPath() { return g_leastPath; }
+// iOS: PhiMeMod.log (every launch); Android: PhiMeMod-prev.log (the launch before this one: after a hang or a crash
+// the game gets restarted, and that is the launch that went wrong)
+const char* logFullPath() { return g_fullPath; }
 
 #if !defined(__APPLE__)
 // Android: /sdcard/Android/media/<pkg>/PhiMeMod/PhiMeMod.log, next to where updates go, so a file
@@ -23,6 +28,8 @@ static int openAndroidLog() {
     mkdir(path, 0770);
     snprintf(path, sizeof(path), "/sdcard/Android/media/%s/PhiMeMod/PhiMeMod-least.log", pkg);
     g_leastFd = open(path, 0x0001 | 0x0040 | 0x0200, 0660);  // O_WRONLY|O_CREAT|O_TRUNC
+    snprintf(g_leastPath, sizeof g_leastPath, "%s", path);
+    snprintf(g_fullPath, sizeof g_fullPath, "/sdcard/Android/media/%s/PhiMeMod/PhiMeMod-prev.log", pkg);
     // the last launch's full log is kept as PhiMeMod-prev.log: after a hang the game gets restarted, and the log of
     // the launch that hung is the one we need
     char prev[320];
@@ -47,6 +54,10 @@ void pm_log(const char* fmt, ...) {
         const char* home = getenv("HOME");
         g_logFd = home ? open((snprintf(path, sizeof(path), "%s/Documents/PhiMeMod.log", home), path), PM_O_FLAGS, 0644) : -1;
         g_leastFd = home ? open((snprintf(path, sizeof(path), "%s/Documents/PhiMeMod-least.log", home), path), PM_O_REPLACE, 0644) : -1;
+        if (home) {
+            snprintf(g_leastPath, sizeof g_leastPath, "%s/Documents/PhiMeMod-least.log", home);
+            snprintf(g_fullPath, sizeof g_fullPath, "%s/Documents/PhiMeMod.log", home);
+        }
     }
 #else
     __android_log_print(5 /*ANDROID_LOG_WARN*/, "PhiMeMod", "%s", buf);

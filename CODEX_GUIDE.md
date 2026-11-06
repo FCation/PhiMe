@@ -17,6 +17,11 @@ The user talks in Chinese and tests on an iPad (iOS) mostly; they send `PhiMeMod
 | audio decoder tests | `powershell -ExecutionPolicy Bypass -File mod\tests\build_audiodec_test.ps1` | 64 cases (needs ffmpeg for the MP3 / FLAC fixtures) |
 | install IPA | `mod\ios\package_ipa.ps1 -Ipa games.Pigeon.Phigros-4.0.1.2.ipa` | `mod\out\ios\Phigros-PhiMeMod.ipa` |
 | install APK | `mod\android\repack.ps1 -Apk com.PigeonGames.Phigros.apk` | `mod\out\android\Phigros-PhiMeMod.apk` |
+| release (both fonts) | `powershell -ExecutionPolicy Bypass -File mod\release_pack.ps1` | `PhiMe-v<ver>\share-SourceSerif4\` + `private-<font>\` (ipa, apk, dylib, so) |
+
+- `-Serif Local|Source` (all build / package scripts): the Latin UI font. `Local` (default) = the font named in
+  `mod/assets/fonts/serif.local.txt` (three lines: Regular file, Bold file, display name; gitignored, like the fonts),
+  falling back to Source Serif 4; `Source` = Source Serif 4 (SIL OFL), the only one for builds that are shared.
 
 - Toolchain: LLVM at `C:\Program Files\LLVM\bin` (clang++, ld64.lld, ld.lld). No Xcode, no NDK.
 - Both build scripts compile **every `mod/src/*.cpp`** (not subfolders). `mod/src/third_party/stb_vorbis.c`,
@@ -80,8 +85,9 @@ The user talks in Chinese and tests on an iPad (iOS) mostly; they send `PhiMeMod
 | panel.cpp | settings panel (5 tabs) | 游玩 / 显示 / 其他 / 皮肤 / 关于 (license + copyright); `toggleRow`, `actionRow` (buttons → `saveAction(SAVE_*)`), `para` (wrapped text) |
 | practice.cpp, practice_ui.cpp | practice mode, song-select dock | `reseed` (recreate notes at t), `practiceStart`, result guard, the 镜像/练习/自动 dock |
 | resume.cpp | replay before resuming | |
-| hud.cpp | in-level accuracy + judgement counts | |
-| critical.cpp | 大小 P (Critical Perfect) | always counted; `critEnabled()` = shown. Two-pass NoteUpdateManager update; clone hook; `paintLines` |
+| hud.cpp | in-level accuracy + judgement counts, timing bar + EARLY / LATE | hits come from critical.cpp (`hudOffsetHit`); the bar is a generated gradient texture |
+| critical.cpp | 大小 P (Critical Perfect), judge line colours | always counted; `critEnabled()` = shown. Two-pass NoteUpdateManager update; clone hook; `lineFrame` (line colours at render time, faded) |
+| logcheck.cpp | 关于 → 分析日志 | reads `PhiMeMod-least.log`, plain-words summary, export via `pickerSave(PICK_TEXT)` |
 | result.cpp, resacc.cpp, rks.cpp | result screen tweaks | 4-dec accuracy, [分数/ACC] switch, RKS count-up |
 | details.cpp | judgement records, song select overlay, details card | records.json, best = highest accuracy |
 | course.cpp | PhiMe course mode | |

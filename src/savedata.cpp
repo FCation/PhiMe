@@ -282,6 +282,10 @@ void saveAction(int action) {
         tutorialOpen();
         return;
     }
+    if (action == SAVE_LOG_CHECK) {
+        logCheckOpen();
+        return;
+    }
     if (action == SAVE_LOGIN) {
         loginNow();
         return;
@@ -347,7 +351,7 @@ static bool g_dModal = false;
 
 static void dialogClose() {
     Obj* r = (Obj*)g_dRoot.get();
-    uiFadeAway(r);  // fades out, then destroyed
+    uiFadeAway(r, (Obj*)g_dCard.get());  // fades out (the card shrinking a little), then destroyed
     g_dRoot.clear();
     g_dCard.clear();
     g_dDim.clear();
